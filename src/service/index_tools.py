@@ -75,7 +75,7 @@ class IndexTools:
             query_time = end_time - start_time
 
             # Calculate recall
-            recall = 1 / (1 + distances[0][0])
+            recall = float(1 / (1 + distances[0][0]))
 
             # Collect results for this combination of hyperparameters
             results.append({

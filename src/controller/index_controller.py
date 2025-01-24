@@ -41,8 +41,10 @@ async def create_index(email: str, data: IndexModel) -> JSONResponse:
         # Get the optimal parameters
         optimal_params = await rag_service.get_optimal_hyperparameters()
 
+        logger.info(optimal_params)
+
         # Upload the index to MongoDB
-        file_name = await storage_manager.create(
+        _ = await storage_manager.create(
             email=email,
             filename='index',
             data=rag_service
@@ -52,7 +54,6 @@ async def create_index(email: str, data: IndexModel) -> JSONResponse:
         payload = {
             "email": email,
             "hyperparameters": optimal_params,
-            'file_name': file_name,
             "status": 'SUCCESS'
         }
         return JSONResponse(payload, status_code=status.HTTP_201_CREATED)
@@ -110,6 +111,7 @@ async def get_index(email: str) -> JSONResponse:
 @router.put("/update/{email}", status_code=status.HTTP_200_OK)
 async def update_index(email: str, data: IndexModel) -> JSONResponse:
     try:
+        user_data = data.data
         logger.info(f"Started index update request - Email: {email}")
 
         # Get the index file from the DB
@@ -125,12 +127,12 @@ async def update_index(email: str, data: IndexModel) -> JSONResponse:
 
         # Generate embeddings for the new data
         logger.info(f"Generating embeddings for the data")
-        embeddings = await index_service.get_embeddings(data.data)
+        embeddings = await index_service.get_embeddings(user_data)
 
         # Update the index module
         await index_service.index_store.add_index(
             embeddings=embeddings,
-            labels=data
+            labels=user_data
         )
 
         # Update the index

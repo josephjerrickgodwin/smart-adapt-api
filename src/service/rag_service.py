@@ -52,7 +52,7 @@ class RAGService:
                 batch = sentences[i:i + self.batch_size]
                 batch_embeddings = MODEL.encode(batch, show_progress_bar=False)
                 embeddings.extend(batch_embeddings)
-        return np.asarray(embeddings, dtype=torch.float32)
+        return np.asarray(embeddings, dtype=np.float32)
 
     async def get_all_hyperparameters(self):
         assert self.optimization_results is not None, "Hyperparameters have not been initialized yet!"
@@ -85,7 +85,7 @@ class RAGService:
         embeddings = await self.get_embeddings(docs)
 
         # Select the optimal hyperparameters
-        optimal_result, results = await index_tools.get_optimal_hyperparameters(
+        results, optimal_result = await index_tools.get_optimal_hyperparameters(
             vectors=embeddings,
             ef_construction_values=self.ef_construction_values,
             ef_search_values=self.ef_search_values,
@@ -129,7 +129,7 @@ class RAGService:
 
         # Search the Vector Store
         logger.info('Querying the vector store')
-        results = self.index_store.search(
+        results = await self.index_store.search(
             query_embeddings=query,
             top_k=k,
             return_embeddings=return_embeddings

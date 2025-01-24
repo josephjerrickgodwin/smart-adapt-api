@@ -237,11 +237,8 @@ class IndexStore:
                     return_embeddings=return_embeddings
                 )
             else:
-                current_results = await self.get_top_k_similar_embeddings(
-                    labels=labels,
-                    embeddings=embeddings,
-                    query_embedding=query_embedding,
-                    top_k=top_k,
+                current_results = await self.search_by_threshold(
+                    query=query_embedding,
                     return_embeddings=return_embeddings
                 )
             results.extend(current_results)

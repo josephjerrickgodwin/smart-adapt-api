@@ -1,17 +1,22 @@
-import torch
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     TrainingArguments,
 )
+import os
+from typing import List, Generator
+
+from datasets import Dataset
 from peft import (
     LoraConfig,
     get_peft_model,
 )
+from transformers import (
+    AutoModelForCausalLM,
+    AutoTokenizer,
+    TrainingArguments,
+)
 from trl import SFTTrainer
-from datasets import Dataset
-from typing import List, Optional, Generator
-import os
 
 from src.service.storage_manager import storage_manager
 
