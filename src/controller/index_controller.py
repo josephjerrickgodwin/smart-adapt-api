@@ -20,7 +20,6 @@ router = APIRouter(prefix='/index', tags=['Index Controller'])
 @router.post("/create", status_code=status.HTTP_201_CREATED)
 async def create_index(email: str, data: IndexModel) -> JSONResponse:
     try:
-        # Log request
         logger.info(f"Create index request - Email: {email}, Time: {datetime.now()}")
 
         # Check for existing index

@@ -17,7 +17,7 @@ load_dotenv()
 
 logger = logging.getLogger(__name__)
 
-# Load the Sentence Transformer Model ID
+# Load the Sentence Transformer Model
 SENTENCE_MODEL_ID = str(os.getenv('SENTENCE_MODEL_ID'))
 
 # Load the sentence model

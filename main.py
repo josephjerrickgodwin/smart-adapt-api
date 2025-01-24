@@ -12,6 +12,8 @@ from fastapi import FastAPI
 from src.controller import (
     health_router,
     index_router,
+    dataset_router,
+    inference_router,
     rag_router
 )
 
@@ -20,6 +22,8 @@ app = FastAPI()
 # Add routes
 app.include_router(health_router)
 app.include_router(index_router)
+app.include_router(dataset_router)
+app.include_router(inference_router)
 app.include_router(rag_router)
 
 if __name__ == "__main__":

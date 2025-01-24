@@ -27,6 +27,10 @@ class StorageManager:
         self.base_dir = os.path.join(os.getcwd(), base_dir)
         os.makedirs(self.base_dir, exist_ok=True)
 
+    async def get_user_data_path(self, email: str):
+        pruned_username = await self._sanitize_filename(email)
+        return os.path.join(self.base_dir, pruned_username)
+
     @staticmethod
     async def _sanitize_filename(email: str) -> str:
         """
@@ -149,6 +153,24 @@ class StorageManager:
 
         # Delete file if it exists, else raise FileNotFoundError
         os.remove(file_path)
+
+    async def check_file_exists(self, email: str, filename: str):
+        """
+        Check if a file exists under the user's directory
+
+        :param email: Email address of the user
+        :param filename: Name of the file (without an extension)
+
+        :return: True if file exists, False if it doesn't exist
+        """
+        # Sanitize both the username and the filename
+        sanitized_email = await self._sanitize_filename(email)
+        sanitized_filename = await self._sanitize_filename(filename)
+
+        # Define the full file path
+        file_path = os.path.join(self.base_dir, sanitized_email, sanitized_filename)
+
+        return os.path.exists(file_path)
 
     async def list_files(self, email: str) -> list:
         """
