@@ -78,12 +78,7 @@ class RAGService:
             'data_count': len(self.index_store)
         }
 
-    async def configure_vector_store(self, docs: List[str]):
-        assert len(docs) >= 2, "There must be at least two documents!"
-
-        # Create embeddings
-        embeddings = await self.get_embeddings(docs)
-
+    async def configure_vector_store(self, embeddings: np.ndarray, docs: List[str]):
         # Select the optimal hyperparameters
         results, optimal_result = await index_tools.get_optimal_hyperparameters(
             vectors=embeddings,

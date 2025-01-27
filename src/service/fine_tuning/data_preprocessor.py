@@ -29,7 +29,7 @@ class DataPreprocessor:
         """
         # Convert list of integers to bytes and then decode
         byte_stream = bytes(bytes_data)
-        return byte_stream.decode('utf-8', errors='ignore')
+        return byte_stream.decode('latin-1', errors='ignore')
 
     @classmethod
     def preprocess_text(cls, data_contents: str, chunk_size: int = 128) -> List[str]:

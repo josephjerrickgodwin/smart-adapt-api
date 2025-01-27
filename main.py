@@ -9,6 +9,8 @@ logger = logging.getLogger(__name__)
 
 import uvicorn
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
 from src.controller import (
     health_router,
     index_router,
@@ -25,6 +27,15 @@ app.include_router(index_router)
 app.include_router(dataset_router)
 app.include_router(inference_router)
 app.include_router(rag_router)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins
+    allow_credentials=True,  # Optional: Set to False if credentials are not needed
+    allow_methods=["*"],  # Allow all HTTP methods
+    allow_headers=["*"],  # Allow all headers
+)
 
 if __name__ == "__main__":
     uvicorn.run(

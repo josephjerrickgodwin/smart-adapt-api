@@ -9,6 +9,7 @@ from fastapi.responses import JSONResponse
 from src.exception import DuplicateEmailError
 from src.model.index_model import IndexModel
 from src.model.status_enum import Status
+from src.service.fine_tuning.data_preprocessor import data_preprocessor
 from src.service.rag_service import RAGService
 from src.service.storage_manager import storage_manager
 
@@ -16,40 +17,80 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix='/index', tags=['Index Controller'])
 
+INDEX_PREFIX = 'Index'
+
 
 @router.post("/create", status_code=status.HTTP_201_CREATED)
-async def create_index(email: str, data: IndexModel) -> JSONResponse:
+async def create_index(data: IndexModel) -> JSONResponse:
+    email = data.email
+    user_data = data.data
+
     try:
         logger.info(f"Create index request - Email: {email}, Time: {datetime.now()}")
 
+        # Convert dataset to text
+        text_data = data_preprocessor.bytes_to_text(user_data)
+
+        # Preprocess dataset
+        processed_data = data_preprocessor.preprocess_text(text_data)
+
         # Check for existing index
         try:
-            _ = await storage_manager.read(
+            logger.info(f"Started loading the index data")
+            index_data = await storage_manager.read(
                 email=email,
-                filename='index'
+                filename=INDEX_PREFIX
             )
-            # If there's an existing index, raise error
-            raise DuplicateEmailError("")
-        except FileNotFoundError:
-            """ Ignore if the file is already exist """
-            pass
 
-        # Create the RAG service and configure the vector store (HNSW)
-        rag_service = RAGService()
-        _ = await rag_service.configure_vector_store(data.data)
+            # Initialize the index service
+            index_data = index_data["data"]
+            rag_service: RAGService = pickle.loads(index_data)
+
+            # Generate embeddings for the new data
+            logger.info("Generating embeddings for the data")
+            embeddings = await rag_service.get_embeddings(processed_data)
+
+            # Update the index module
+            await rag_service.index_store.add_index(
+                embeddings=embeddings,
+                labels=processed_data
+            )
+
+            # Update the index
+            logger.info(f"Updating the database")
+            _ = await storage_manager.update(
+                email=email,
+                filename=INDEX_PREFIX,
+                data=rag_service
+            )
+
+        except FileNotFoundError:
+            logger.info(f"Started creating the index data")
+
+            # Create the RAG service and configure the vector store (HNSW)
+            rag_service = RAGService()
+
+            # Generate embeddings for the new data
+            logger.info("Generating embeddings for the data")
+            embeddings = await rag_service.get_embeddings(processed_data)
+
+            # Start the simulation
+            logger.info('Started generating hyperparameters and simulation. This may take a while.')
+            _ = await rag_service.configure_vector_store(
+                embeddings=embeddings,
+                docs=processed_data
+            )
+
+            # Upload the index to MongoDB
+            _ = await storage_manager.create(
+                email=email,
+                filename=INDEX_PREFIX,
+                data=rag_service
+            )
+            logger.info(f"Successfully created pickle file for email: {email}")
 
         # Get the optimal parameters
         optimal_params = await rag_service.get_optimal_hyperparameters()
-
-        logger.info(optimal_params)
-
-        # Upload the index to MongoDB
-        _ = await storage_manager.create(
-            email=email,
-            filename='index',
-            data=rag_service
-        )
-        logger.info(f"Successfully created pickle file for email: {email}")
 
         payload = {
             "email": email,
@@ -80,7 +121,7 @@ async def get_index(email: str) -> JSONResponse:
         # Get the index file from the DB
         index_data = await storage_manager.read(
             email=email,
-            filename='index'
+            filename=INDEX_PREFIX
         )
 
         # Initialize the index service
@@ -109,15 +150,17 @@ async def get_index(email: str) -> JSONResponse:
 
 
 @router.put("/update/{email}", status_code=status.HTTP_200_OK)
-async def update_index(email: str, data: IndexModel) -> JSONResponse:
+async def update_index(data: IndexModel) -> JSONResponse:
+    email = data.email
+    user_data = data.data
+
     try:
-        user_data = data.data
         logger.info(f"Started index update request - Email: {email}")
 
         # Get the index file from the DB
         index_data = await storage_manager.read(
             email=email,
-            filename='index'
+            filename=INDEX_PREFIX
         )
 
         # Initialize the index service
@@ -125,9 +168,15 @@ async def update_index(email: str, data: IndexModel) -> JSONResponse:
         index_data = index_data["data"]
         index_service: RAGService = pickle.loads(index_data)
 
+        # Convert dataset to text
+        text_data = data_preprocessor.bytes_to_text(data.data)
+
+        # Preprocess dataset
+        processed_data = data_preprocessor.preprocess_text(text_data)
+
         # Generate embeddings for the new data
         logger.info(f"Generating embeddings for the data")
-        embeddings = await index_service.get_embeddings(user_data)
+        embeddings = await index_service.get_embeddings(processed_data)
 
         # Update the index module
         await index_service.index_store.add_index(
@@ -139,7 +188,7 @@ async def update_index(email: str, data: IndexModel) -> JSONResponse:
         logger.info(f"Updating the database")
         _ = await storage_manager.update(
             email=email,
-            filename='index',
+            filename=INDEX_PREFIX,
             data=index_service
         )
 
@@ -170,7 +219,7 @@ async def delete_index(email: str) -> Dict[str, str]:
         logger.info(f"Started index delete request - Email: {email}")
 
         # Get the index file from the DB
-        await storage_manager.delete(email=email, filename='index')
+        await storage_manager.delete(email=email, filename=INDEX_PREFIX)
 
         logger.info(f"Successfully deleted index for email: {email}")
 
