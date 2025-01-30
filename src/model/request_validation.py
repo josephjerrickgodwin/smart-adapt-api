@@ -23,11 +23,24 @@ class MessageModel(BaseModel):
     role: Literal['user', 'assistant']
     content: str
 
+    def to_dict(self):
+        return {
+            'role': self.role,
+            'content': self.content
+        }
+
 
 class InferenceRequest(BaseModel):
     """Request model for model inference."""
     user_id: str
     history: List[MessageModel]
+
+    def to_dict(self):
+        updated_history = [message.to_dict() for message in self.history]
+        return {
+            'user_id': self.user_id,
+            'history': updated_history
+        }
 
 
 class FineTuningRequest(BaseModel):

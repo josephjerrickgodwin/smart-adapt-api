@@ -27,7 +27,7 @@ async def model_inference(request: InferenceRequest):
     """
     try:
         history_list = request.history
-        user_id = request.user.id
+        user_id = request.user_id
 
         # Convert to a list of messages from the object
         history = [message.to_dict() for message in history_list]
