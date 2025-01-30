@@ -6,8 +6,8 @@ from fastapi.responses import StreamingResponse
 from src.model.request_validation import InferenceRequest, FineTuningRequest
 from src.service.fine_tuning.data_preprocessor import data_preprocessor
 from src.service.fine_tuning.lora_hyperparameters import lora_hyperparameters
-from src.service.fine_tuning.model_finetuner import ModelFineTuner
 from src.service.fine_tuning.model_service import model_service
+from src.service.storage_manager import storage_manager
 
 logger = logging.getLogger(__name__)
 
@@ -15,47 +15,56 @@ router = APIRouter(prefix='/v1', tags=['Inference Controller'])
 
 
 @router.post("/completions", status_code=status.HTTP_200_OK)
-async def model_inference(email: str, request: InferenceRequest):
+async def model_inference(request: InferenceRequest):
     """
     Perform model inference with optional fine-tuned model.
 
     Args:
-        email (str): Email address of the user
-        request (InferenceRequest): Inference request with query and parameters
+        request (InferenceRequest): Inference request with user id and history
 
     Returns:
         StreamingResponse of generated text
     """
     try:
-        # Use the base model for inference by default
-        pipe = model_service.predict(
-            email=email,
-            use_lora=request.use_lora
+        history_list = request.history
+        user_id = request.user.id
+
+        # Convert to a list of messages from the object
+        history = [message.to_dict() for message in history_list]
+
+        # Get the latest user message
+        query = history.pop().get("content").strip()
+
+        # Get the index file from the DB
+        logger.info(f"Started fetching the existing index")
+        rag_service = await storage_manager.read(
+            email=user_id,
+            filename='index'
         )
 
-        # Generate text with streaming
-        async def generate():
-            # Use the pipeline with user-specified parameters
-            outputs = pipe(
-                request.query,
-                max_new_tokens=request.max_new_tokens,
-                temperature=request.temperature,
-                top_p=request.top_p
-            )
+        # Start search
+        logger.info(f"Started querying the vector store")
+        context_list = await rag_service.search(query=query)
 
-            # Stream generated text chunks
-            for chunk in outputs[0]['generated_text'].split():
-                yield f"data: {chunk}\n\n"
-            yield f"[END]"
+        # Convert the list of context to string
+        context = '\n'.join([f"{i + 1}: {line}" for i, line in enumerate(context_list)]) if context_list else ''
 
-        return StreamingResponse(generate(), media_type="text/event-stream")
+        return StreamingResponse(
+            model_service.start_inference(
+                user_id=user_id,
+                user_query=query,
+                history=history,
+                context=context
+            ),
+            media_type="text/event-stream"
+        )
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/fine-tune")
-async def fine_tune_model(email: str, request: FineTuningRequest):
+async def fine_tune_model(user_id: str, request: FineTuningRequest):
     """
     Fine-tune the language model with a custom dataset.
 
@@ -67,7 +76,7 @@ async def fine_tune_model(email: str, request: FineTuningRequest):
     5. Stream progress updates
 
     Args:
-        email (str): Email address of the
+        user_id (str): Unique ID of the user
         request (FineTuningRequest): Fine-tuning configuration
 
     Returns:
@@ -88,13 +97,11 @@ async def fine_tune_model(email: str, request: FineTuningRequest):
             dataset_size=dataset_size
         )
 
-        # Fine-tuning
+        # Start Fine-tuning
         async def fine_tune_progress():
-            fine_tuner = ModelFineTuner()
-            async for progress in fine_tuner.fine_tune(
+            async for progress in model_service.fine_tune(
+                    user_id=user_id,
                     dataset=processed_data,
-                    model_name=request.model_name,
-                    username=email,
                     r=hyperparams['r'],
                     lora_alpha=hyperparams['lora_alpha'],
                     num_epochs=request.num_epochs,
