@@ -37,17 +37,26 @@ async def model_inference(request: InferenceRequest):
 
         # Get the index file from the DB
         logger.info(f"Started fetching the existing index")
-        rag_service = await storage_manager.read(
+
+        # Check if an index is available for the user
+        index_exist = await storage_manager.check_file_exists(
             email=user_id,
-            filename='index'
+            file_name='index'
         )
 
-        # Start search
-        logger.info(f"Started querying the vector store")
-        context_list = await rag_service.search(query=query)
+        context = ''
+        if index_exist:
+            rag_service = await storage_manager.read(
+                email=user_id,
+                filename='index'
+            )
 
-        # Convert the list of context to string
-        context = '\n'.join([f"{i + 1}: {line}" for i, line in enumerate(context_list)]) if context_list else ''
+            # Start search
+            logger.info(f"Started querying the vector store")
+            context_list = await rag_service.search(query=query)
+
+            # Convert the list of context to string
+            context = '\n'.join([f"{i + 1}: {line}" for i, line in enumerate(context_list)]) if context_list else ''
 
         return StreamingResponse(
             model_service.start_inference(

@@ -115,7 +115,7 @@ class ModelService:
                 self.lora_loaded = False
 
         # Check for LoRA adapters for the current user in the local storage
-        lora_exist = await storage_manager.exists(
+        lora_exist = await storage_manager.check_file_exists(
             email=email,
             file_name=self.data_model_name
         )

@@ -38,7 +38,7 @@ async def search(email: str, data: RAGSearchModel):
         logger.warning(f"An index does not exist for email: {email}")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="File not found!"
+            detail="Index does not exist for email!"
         )
     except Exception as e:
         logger.error(f"Unexpected error while querying the index for email: {email} - {str(e)}")
