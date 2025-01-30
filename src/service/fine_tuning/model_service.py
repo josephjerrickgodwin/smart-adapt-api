@@ -2,8 +2,7 @@ import gc
 import logging
 import os
 from threading import Thread
-from typing import List, Generator
-
+from typing import List
 import torch
 from dotenv import load_dotenv
 
@@ -25,7 +24,6 @@ from src.exception.inference_disabled_error import InferenceDisabledError
 from src.service import prompt_service
 from src.service.TextStreamer import SmartAdaptTextStreamer
 from src.service.storage_manager import storage_manager
-from src.service.streaming_service import streaming_service
 
 load_dotenv()
 
@@ -33,6 +31,7 @@ logger = logging.getLogger(__name__)
 
 # Load the Sentence Transformer Model and the HF token
 REASONING_MODEL_ID = str(os.getenv('REASONING_MODEL_ID'))
+INFERENCE_MODEL_ID = str(os.getenv('INFERENCE_MODEL_ID'))
 HF_TOKEN = str(os.getenv('HF_TOKEN'))
 
 
@@ -42,7 +41,6 @@ class ModelService:
     """
     def __init__(self):
         self.token = HF_TOKEN
-        self.reasoning_model_id = REASONING_MODEL_ID
         self.data_model_name = 'adapters'
         self.logs_dir = 'logs'
 
@@ -65,7 +63,7 @@ class ModelService:
         # Load weights
         self._load_weights()
 
-    def flush(self):
+    def flush(self, load_reasoning_model_only: bool = False):
         # Disable inference temporarily
         self.inference_enabled = False
 
@@ -85,7 +83,7 @@ class ModelService:
             torch.cuda.empty_cache()
 
         # Load the model again
-        self._load_weights()
+        self._load_weights(load_reasoning_model_only)
 
         # Reset the inference status
         self.inference_enabled = True
@@ -117,7 +115,7 @@ class ModelService:
         # Check for LoRA adapters for the current user in the local storage
         lora_exist = await storage_manager.check_file_exists(
             email=email,
-            file_name=self.data_model_name
+            filename=self.data_model_name
         )
         logger.info(f"{'Found LoRA adapters and loading to the model' if lora_exist else 'Found no LoRA adapters'}")
 
@@ -125,7 +123,7 @@ class ModelService:
         if lora_exist:
             user_data_weights = await storage_manager.read(
                 email=email,
-                file_name=self.data_model_name
+                filename=self.data_model_name
             )
             peft_config = PeftConfig.from_pretrained(user_data_weights)
             self.model = PeftModel.from_pretrained(
@@ -192,11 +190,12 @@ class ModelService:
 
         # Define the generation kwargs
         thinker_kwargs = dict(
-            tokens.input_ids,
-            max_new_tokens=max_new_tokens,
+            input_ids=tokens.input_ids,
+            max_new_tokens=512,
             attention_mask=tokens.attention_mask,
             pad_token_id=self.tokenizer.eos_token_id,
             do_sample=True,
+            repetition_penalty=1.8,
             streamer=streamer
         )
 
@@ -208,7 +207,8 @@ class ModelService:
 
         # Start streaming the reasoning
         async for new_text in streamer:
-            await streaming_service.stream(new_text)
+            if new_text:
+                yield f'data: {new_text}\n\n'
 
         # Get the streamed message from the `thinker` model
         reasoning = streamer.get_response()
@@ -242,11 +242,12 @@ class ModelService:
 
         # Define the generation kwargs
         generation_kwargs = dict(
-            inference_tokens.input_ids,
+            input_ids=inference_tokens.input_ids,
             max_new_tokens=max_new_tokens,
             attention_mask=inference_tokens.attention_mask,
             pad_token_id=self.infer_tokenizer.eos_token_id,
             do_sample=True,
+            repetition_penalty=1.8,
             streamer=streamer
         )
 
@@ -258,43 +259,45 @@ class ModelService:
 
         # Start streaming the reasoning
         async for new_text in streamer:
-            await streaming_service.stream(new_text)
+            if new_text:
+                yield f'data: {new_text}\n\n'
 
-    def _load_weights(self):
+        yield f'data: [END]\n\n'
+
+    def _load_weights(self, load_reasoning_model_only: bool = False):
         """
         Loads the `thinker` and `inference` model instances
         """
         # Load the tokenizer
         logger.info('Started loading the `thinker` tokenizer')
         self.tokenizer = AutoTokenizer.from_pretrained(
-            self.reasoning_model_id,
+            REASONING_MODEL_ID,
             token=self.token
         )
-        self.tokenizer.pad_token = self.tokenizer.eos_token
 
         # Load the model
         logger.info('Started loading the `thinker` model')
         self.model = AutoModelForCausalLM.from_pretrained(
-            self.reasoning_model_id,
+            REASONING_MODEL_ID,
             token=self.token
         ).to(self.device)
 
-        # Load the inference model and tokenizer
-        logger.info('Started loading the `inference` tokenizer')
-        self.infer_tokenizer = AutoTokenizer.from_pretrained(
-            self.reasoning_model_id,
-            token=self.token
-        )
-        self.infer_tokenizer.pad_token = self.infer_tokenizer.eos_token
-
-        # Load the model
-        logger.info('Started loading the `inference` model')
-        self.infer_model = AutoModelForCausalLM.from_pretrained(
-            self.reasoning_model_id,
-            token=self.token
-        ).to(self.device)
-
-        logger.info('Successfully loaded the `thinker` and `inference` instances')
+        if not load_reasoning_model_only:
+            # Load the inference model and tokenizer
+            logger.info('Started loading the `inference` tokenizer')
+            self.infer_tokenizer = AutoTokenizer.from_pretrained(
+                INFERENCE_MODEL_ID,
+                token=self.token
+            )
+            # Load the model
+            logger.info('Started loading the `inference` model')
+            self.infer_model = AutoModelForCausalLM.from_pretrained(
+                INFERENCE_MODEL_ID,
+                token=self.token
+            ).to(self.device)
+            logger.info('Successfully loaded the `thinker` and `inference` instances')
+        else:
+            logger.info('Successfully loaded the `thinker` instance')
 
     async def prepare_model(
             self,
@@ -343,7 +346,7 @@ class ModelService:
             per_device_eval_batch_size=1,
             gradient_accumulation_steps=2,
             report_to: str = 'none'
-    ) -> Generator[str, None, None]:
+    ):
         """
             Fine-tune the model with the given dataset.
 
@@ -365,6 +368,9 @@ class ModelService:
         """
         # Disable inference during training
         self.inference_enabled = False
+
+        # Unload and reset weights
+        self.flush()
 
         # Prepare the data storage
         data_path = await storage_manager.get_user_data_path(user_id)

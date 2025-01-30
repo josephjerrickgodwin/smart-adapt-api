@@ -60,11 +60,14 @@ class SmartAdaptTextStreamer(AsyncTextIteratorStreamer):
         filtered_text = text.replace("assistant\n\n", "").strip()
 
         response = ''
-        if filtered_text:
+        if filtered_text or stream_end:
             self.response += filtered_text
 
+            # Determine finish_reason
+            finish_reason = "stop" if stream_end else None
+
             # Construct the event
-            delta = DeltaModel(content=filtered_text, type=self.text_type)
+            delta = DeltaModel(content=filtered_text, type=self.text_type, finish_reason=finish_reason)
             choices = ChoicesModel(index=self.index, delta=delta)
             response = LLMResponseModel(
                 choices=choices,

@@ -41,7 +41,7 @@ async def model_inference(request: InferenceRequest):
         # Check if an index is available for the user
         index_exist = await storage_manager.check_file_exists(
             email=user_id,
-            file_name='index'
+            filename='index'
         )
 
         context = ''
