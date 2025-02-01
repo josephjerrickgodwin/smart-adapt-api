@@ -11,7 +11,7 @@ class StorageManager:
     A class to manage storing and retrieving pickle files for a user.
 
     This class provides CRUD (Create, Read, Update, Delete) operations for pickle files,
-    with each file identified by an user_id (sanitized to be filename-friendly).
+    with each file identified by a user_id (sanitized to be filename-friendly).
 
     Files are stored in a directory structure: 
     /data/username/filename.pkl

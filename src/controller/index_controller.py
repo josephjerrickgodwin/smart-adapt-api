@@ -103,7 +103,7 @@ async def create_index(data: IndexModel) -> JSONResponse:
     except UnicodeDecodeErrors as e:
         logger.error(f"Pre-process dataset failed due to: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f'Invalid parameters detected: {str(e)}'
         )
 
@@ -149,7 +149,6 @@ async def get_index(user_id: str) -> JSONResponse:
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Index does not exist!"
         )
-    # User not found error?
     except Exception as e:
         logger.error(f"Unexpected error in getting index information for user_id: {user_id}: {str(e)}")
         raise HTTPException(

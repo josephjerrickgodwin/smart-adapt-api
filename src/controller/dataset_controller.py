@@ -24,7 +24,7 @@ async def pre_process_dataset(user_id: str, request: DatasetInsertRequest):
     Preprocess dataset for fine-tuning by removing unnecessary characters.
 
     Args:
-        user_id (str): user_id of the user
+        user_id (str): Unique ID of the user
         request (DatasetInsertRequest): Dataset insertion request
 
     Returns:
@@ -72,7 +72,7 @@ async def calculate_lora_hyperparameters(user_id: str, request: LoRAHyperparamet
     Calculate LoRA hyperparameters.
 
     Args:
-        user_id (str): user_id of the user
+        user_id (str): Unique ID of the user
         request (LoRAHyperparametersRequest): Hyperparameters request
 
     Returns:
