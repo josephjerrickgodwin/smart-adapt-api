@@ -20,6 +20,7 @@ from transformers import (
 )
 from trl import SFTTrainer
 
+from src.exception.fine_tuning_disabled_error import FineTuningDisabledError
 from src.exception.inference_disabled_error import InferenceDisabledError
 from src.service import prompt_service
 from src.service.TextStreamer import SmartAdaptTextStreamer
@@ -366,6 +367,9 @@ class ModelService:
             Yields:
                 str: Progress updates during fine-tuning
         """
+        if not self.inference_enabled:
+            raise FineTuningDisabledError('A fine-tuning task is in progress!')
+
         # Disable inference during training
         self.inference_enabled = False
 

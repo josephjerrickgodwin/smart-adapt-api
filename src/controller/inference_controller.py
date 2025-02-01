@@ -3,6 +3,8 @@ import logging
 from fastapi import APIRouter, status, HTTPException
 from fastapi.responses import StreamingResponse
 
+from src.exception.fine_tuning_disabled_error import FineTuningDisabledError
+from src.exception.inference_disabled_error import InferenceDisabledError
 from src.exception.unicode_decode_error import UnicodeDecodeErrors
 from src.model.request_validation import InferenceRequest, FineTuningRequest
 from src.service.fine_tuning.data_preprocessor import data_preprocessor
@@ -69,10 +71,18 @@ async def model_inference(request: InferenceRequest):
             media_type="text/event-stream"
         )
 
+    except InferenceDisabledError:
+        error_message = 'Inference disabled. A fine-tuning task is in progress.'
+        logger.error(error_message)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f'{error_message}. Please try again later.'
+        )
     except Exception as e:
+        logger.error(f'Inference failed: {str(e)}')
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=f'{str(e)}. Please try again later.'
         )
 
 
@@ -127,11 +137,18 @@ async def fine_tune_model(user_id: str, request: FineTuningRequest):
     except UnicodeDecodeErrors as e:
         logger.error(f"Pre-process dataset failed due to: {str(e)}")
         raise HTTPException(
-            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=f'Invalid parameters detected: {str(e)}'
         )
+    except FineTuningDisabledError as e:
+        logger.error(f'Fine tuning error: {str(e)}')
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f'{str(e)}. Please try again later!'
+        )
     except Exception as e:
+        error_message = f'Fine-tuning failed: {str(e)}'
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
+            detail=f'{error_message}. Please try again later!'
         )
