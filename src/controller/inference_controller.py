@@ -3,6 +3,7 @@ import logging
 from fastapi import APIRouter, status, HTTPException
 from fastapi.responses import StreamingResponse
 
+from src.exception.unicode_decode_error import UnicodeDecodeErrors
 from src.model.request_validation import InferenceRequest, FineTuningRequest
 from src.service.fine_tuning.data_preprocessor import data_preprocessor
 from src.service.fine_tuning.lora_hyperparameters import lora_hyperparameters
@@ -40,14 +41,14 @@ async def model_inference(request: InferenceRequest):
 
         # Check if an index is available for the user
         index_exist = await storage_manager.check_file_exists(
-            email=user_id,
+            user_id=user_id,
             filename='index'
         )
 
         context = ''
         if index_exist:
             rag_service = await storage_manager.read(
-                email=user_id,
+                user_id=user_id,
                 filename='index'
             )
 
@@ -69,7 +70,10 @@ async def model_inference(request: InferenceRequest):
         )
 
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
 
 
 @router.post("/fine-tune")
@@ -120,5 +124,14 @@ async def fine_tune_model(user_id: str, request: FineTuningRequest):
 
         return StreamingResponse(fine_tune_progress(), media_type="text/event-stream")
 
+    except UnicodeDecodeErrors as e:
+        logger.error(f"Pre-process dataset failed due to: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=f'Invalid parameters detected: {str(e)}'
+        )
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )

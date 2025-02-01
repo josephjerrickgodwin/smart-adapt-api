@@ -88,23 +88,23 @@ class ModelService:
         # Reset the inference status
         self.inference_enabled = True
 
-    async def _load_adapter(self, email: str, merge_and_unload: bool = False):
+    async def _load_adapter(self, user_id: str, merge_and_unload: bool = False):
         """
         Get the inference pipeline for the model.
 
         Args:
-            email (str): Email address of the user
+            user_id (str): Unique ID of the user
 
         Returns:
             text-generation pipeline
         """
         # Check for the current user
         if not self.current_user:
-            self.current_user = email
+            self.current_user = user_id
 
         # If the user adapter is already exist, skip loading it again
         if self.lora_loaded:
-            if email == self.current_user:
+            if user_id == self.current_user:
                 logger.info('LoRA adapter already loaded. Skipping auto assign')
                 return
             else:
@@ -114,7 +114,7 @@ class ModelService:
 
         # Check for LoRA adapters for the current user in the local storage
         lora_exist = await storage_manager.check_file_exists(
-            email=email,
+            user_id=user_id,
             filename=self.data_model_name
         )
         logger.info(f"{'Found LoRA adapters and loading to the model' if lora_exist else 'Found no LoRA adapters'}")
@@ -122,14 +122,14 @@ class ModelService:
         # Load the model with LoRA, if the weights are available
         if lora_exist:
             user_data_weights = await storage_manager.read(
-                email=email,
+                user_id=user_id,
                 filename=self.data_model_name
             )
             peft_config = PeftConfig.from_pretrained(user_data_weights)
             self.model = PeftModel.from_pretrained(
                 self.model,
                 peft_config,
-                adapter_name=email
+                adapter_name=user_id
             ).to(self.device)
 
             # Merge the adapter permanently
@@ -140,7 +140,7 @@ class ModelService:
             logger.info('Successfully loaded LoRA adapters')
 
         # Assign the current user
-        self.current_user = email
+        self.current_user = user_id
 
     async def start_inference(
             self,

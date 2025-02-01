@@ -4,5 +4,5 @@ from pydantic import BaseModel
 
 
 class IndexModel(BaseModel):
-    email: str
+    user_id: str
     data: List[int]

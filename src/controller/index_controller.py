@@ -6,7 +6,8 @@ from typing import Dict
 from fastapi import APIRouter, status, HTTPException
 from fastapi.responses import JSONResponse
 
-from src.exception import DuplicateEmailError
+from src.exception import DuplicateUserError
+from src.exception.unicode_decode_error import UnicodeDecodeErrors
 from src.model.index_model import IndexModel
 from src.model.status_enum import Status
 from src.service.fine_tuning.data_preprocessor import data_preprocessor
@@ -22,11 +23,11 @@ INDEX_PREFIX = 'Index'
 
 @router.post("/create", status_code=status.HTTP_201_CREATED)
 async def create_index(data: IndexModel) -> JSONResponse:
-    email = data.email
+    user_id = data.user_id
     user_data = data.data
 
     try:
-        logger.info(f"Create index request - Email: {email}, Time: {datetime.now()}")
+        logger.info(f"Create index request - User: {user_id}, Time: {datetime.now()}")
 
         # Convert dataset to text
         text_data = data_preprocessor.bytes_to_text(user_data)
@@ -38,7 +39,7 @@ async def create_index(data: IndexModel) -> JSONResponse:
         try:
             logger.info(f"Started loading the index data")
             index_data = await storage_manager.read(
-                email=email,
+                user_id=user_id,
                 filename=INDEX_PREFIX
             )
 
@@ -59,7 +60,7 @@ async def create_index(data: IndexModel) -> JSONResponse:
             # Update the index
             logger.info(f"Updating the database")
             _ = await storage_manager.update(
-                email=email,
+                user_id=user_id,
                 filename=INDEX_PREFIX,
                 data=rag_service
             )
@@ -83,24 +84,31 @@ async def create_index(data: IndexModel) -> JSONResponse:
 
             # Upload the index to MongoDB
             _ = await storage_manager.create(
-                email=email,
+                user_id=user_id,
                 filename=INDEX_PREFIX,
                 data=rag_service
             )
-            logger.info(f"Successfully created pickle file for email: {email}")
+            logger.info(f"Successfully created pickle file for user_id: {user_id}")
 
         # Get the optimal parameters
         optimal_params = await rag_service.get_optimal_hyperparameters()
 
         payload = {
-            "email": email,
+            "user_id": user_id,
             "hyperparameters": optimal_params,
             "status": 'SUCCESS'
         }
         return JSONResponse(payload, status_code=status.HTTP_201_CREATED)
 
-    except DuplicateEmailError:
-        logger.warning(f"Attempted to create duplicate entry for email: {email}")
+    except UnicodeDecodeErrors as e:
+        logger.error(f"Pre-process dataset failed due to: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=f'Invalid parameters detected: {str(e)}'
+        )
+
+    except DuplicateUserError:
+        logger.warning(f"Attempted to create duplicate entry for user_id: {user_id}")
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="File already exists"
@@ -113,14 +121,14 @@ async def create_index(data: IndexModel) -> JSONResponse:
         )
 
 
-@router.get("/get/{email}", status_code=status.HTTP_200_OK)
-async def get_index(email: str) -> JSONResponse:
+@router.get("/get/{user_id}", status_code=status.HTTP_200_OK)
+async def get_index(user_id: str) -> JSONResponse:
     try:
-        logger.info(f"Started fetching index information - Email: {email}")
+        logger.info(f"Started fetching index information - User: {user_id}")
 
         # Get the index file from the DB
         index_data = await storage_manager.read(
-            email=email,
+            user_id=user_id,
             filename=INDEX_PREFIX
         )
 
@@ -132,34 +140,35 @@ async def get_index(email: str) -> JSONResponse:
         # Get relevant information
         hyperparameters = await index_service.get_optimal_hyperparameters()
 
-        logger.info(f"Successfully retrieved the index information for email: {email}")
+        logger.info(f"Successfully retrieved the index information for user_id: {user_id}")
         return JSONResponse(hyperparameters)
 
     except FileNotFoundError:
-        logger.warning(f"Attempted to retrieve non-existent index file for email: {email}")
+        logger.warning(f"Attempted to retrieve non-existent index file for user_id: {user_id}")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Index does not exist!"
         )
+    # User not found error?
     except Exception as e:
-        logger.error(f"Unexpected error in getting index information for email: {email}: {str(e)}")
+        logger.error(f"Unexpected error in getting index information for user_id: {user_id}: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="An unexpected error occurred! Please try again later!"
         )
 
 
-@router.put("/update/{email}", status_code=status.HTTP_200_OK)
+@router.put("/update/{user_id}", status_code=status.HTTP_200_OK)
 async def update_index(data: IndexModel) -> JSONResponse:
-    email = data.email
+    user_id = data.user_id
     user_data = data.data
 
     try:
-        logger.info(f"Started index update request - Email: {email}")
+        logger.info(f"Started index update request - User: {user_id}")
 
         # Get the index file from the DB
         index_data = await storage_manager.read(
-            email=email,
+            user_id=user_id,
             filename=INDEX_PREFIX
         )
 
@@ -187,23 +196,29 @@ async def update_index(data: IndexModel) -> JSONResponse:
         # Update the index
         logger.info(f"Updating the database")
         _ = await storage_manager.update(
-            email=email,
+            user_id=user_id,
             filename=INDEX_PREFIX,
             data=index_service
         )
 
         payload = {
-            "email": email,
+            "user_id": user_id,
             "index_count": len(index_service.index_store),
             "status": Status.SUCCESS.value
         }
         return JSONResponse(payload)
 
     except FileNotFoundError:
-        logger.warning(f"Attempted to update non-existent file for email: {email}")
+        logger.warning(f"Attempted to update non-existent file for user_id: {user_id}")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="The requested file does not exist!"
+        )
+    except UnicodeDecodeErrors as e:
+        logger.error(f"Pre-process dataset failed due to: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail=f'Invalid parameters detected: {str(e)}'
         )
     except Exception as e:
         logger.error(f"Unexpected error in update_pickle_file: {str(e)}")
@@ -213,20 +228,20 @@ async def update_index(data: IndexModel) -> JSONResponse:
         )
 
 
-@router.delete("/delete/{email}", status_code=status.HTTP_200_OK)
-async def delete_index(email: str) -> Dict[str, str]:
+@router.delete("/delete/{user_id}", status_code=status.HTTP_200_OK)
+async def delete_index(user_id: str) -> Dict[str, str]:
     try:
-        logger.info(f"Started index delete request - Email: {email}")
+        logger.info(f"Started index delete request - user_id: {user_id}")
 
         # Get the index file from the DB
-        await storage_manager.delete(email=email, filename=INDEX_PREFIX)
+        await storage_manager.delete(user_id=user_id, filename=INDEX_PREFIX)
 
-        logger.info(f"Successfully deleted index for email: {email}")
+        logger.info(f"Successfully deleted index for user_id: {user_id}")
 
         return {"status": "Index has been deleted successfully"}
 
     except FileNotFoundError:
-        logger.warning(f"Attempted to delete non-existent index for email: {email}")
+        logger.warning(f"Attempted to delete non-existent index for user_id: {user_id}")
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="The requested file does not exist!"

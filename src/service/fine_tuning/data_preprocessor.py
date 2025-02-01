@@ -3,6 +3,8 @@ from typing import List
 import nltk
 import pandas as pd
 
+from src.exception.unicode_decode_error import UnicodeDecodeErrors
+
 
 class DataPreprocessor:
     """Utility class for preprocessing text data."""
@@ -27,9 +29,12 @@ class DataPreprocessor:
         Returns:
             str: Decoded text from bytes
         """
-        # Convert list of integers to bytes and then decode
-        byte_stream = bytes(bytes_data)
-        return byte_stream.decode('latin-1', errors='ignore')
+        try:
+            # Convert list of integers to bytes and then decode
+            byte_stream = bytes(bytes_data)
+            return byte_stream.decode('latin-1', errors='ignore')
+        except Exception as e:
+            raise UnicodeDecodeErrors(f"Data format not supported! More Details: {str(e)}")
 
     @classmethod
     def preprocess_text(cls, data_contents: str, chunk_size: int = 128) -> List[str]:
