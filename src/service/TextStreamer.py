@@ -1,3 +1,4 @@
+import json
 import time
 from typing import Literal
 
@@ -63,11 +64,8 @@ class SmartAdaptTextStreamer(AsyncTextIteratorStreamer):
         if filtered_text or stream_end:
             self.response += filtered_text
 
-            # Determine finish_reason
-            finish_reason = "stop" if stream_end else None
-
             # Construct the event
-            delta = DeltaModel(content=filtered_text, type=self.text_type, finish_reason=finish_reason)
+            delta = DeltaModel(content=filtered_text, type=self.text_type)
             choices = ChoicesModel(index=self.index, delta=delta)
             response = LLMResponseModel(
                 choices=choices,
@@ -79,8 +77,8 @@ class SmartAdaptTextStreamer(AsyncTextIteratorStreamer):
                 time_elapsed=time_taken
             ).to_dict()
 
-            # Convert to string
-            response = f'{response}'
+            # Format to JSON
+            response = json.dumps(response)
 
         # Put the new text in the queue. If the stream is ending, also put a stop signal in the queue.
         super().on_finalized_text(

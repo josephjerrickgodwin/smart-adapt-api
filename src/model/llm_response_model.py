@@ -5,13 +5,11 @@ from pydantic import BaseModel
 class DeltaModel(BaseModel):
     content: str
     type: Literal["thinking", "text"] = "thinking"
-    finish_reason: Optional[str] = None
 
     def to_dict(self) -> dict:
         return {
             "content": self.content,
-            "type": self.type,
-            "finish_reason": self.finish_reason
+            "type": self.type
         }
 
 

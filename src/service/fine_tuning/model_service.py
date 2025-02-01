@@ -194,7 +194,7 @@ class ModelService:
             max_new_tokens=512,
             attention_mask=tokens.attention_mask,
             pad_token_id=self.tokenizer.eos_token_id,
-            do_sample=True,
+            # do_sample=True,
             repetition_penalty=1.8,
             streamer=streamer
         )
@@ -247,7 +247,7 @@ class ModelService:
             attention_mask=inference_tokens.attention_mask,
             pad_token_id=self.infer_tokenizer.eos_token_id,
             do_sample=True,
-            repetition_penalty=1.8,
+            repetition_penalty=1.9,
             streamer=streamer
         )
 
