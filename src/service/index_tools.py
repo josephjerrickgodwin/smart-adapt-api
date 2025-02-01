@@ -26,15 +26,23 @@ class IndexTools:
             m_values: list
     ):
         """
-        Evaluate accuracy, query time, and memory usage for m values
+        Evaluates the performance of FAISS HNSW (Hierarchical Navigable Small World) index
+        for different hyperparameter values by comparing recall and query time.
 
-        :param vectors: Numpy vectors of the document chunks
-        :param query_vector: Numpy vector of query
-        :param ef_construction_values: HNSW construction values
-        :param ef_search_values: HNSW ef search values
-        :param m_values: HNSW m values
+        Args:
+            vectors (np.ndarray): The dataset of vectors to be indexed (shape: [num_samples, dim]).
+            query_vector (np.ndarray): The query vector to search (shape: [1, dim]).
+            ef_construction_values (list): List of `efConstruction` values for HNSW index.
+            ef_search_values (list): List of `efSearch` values for HNSW index.
+            m_values (list): List of `M` values, which determine the number of neighbors in HNSW graph.
 
-        :return: A list of dictionaries with the evaluation data
+        Returns:
+            list: A list of dictionaries, each containing:
+                - 'm' (int): The `M` value used.
+                - 'recall' (float): The recall metric calculated as `1 / (1 + distance)`.
+                - 'ef_search' (int): The `efSearch` value used.
+                - 'query_time' (float): Time taken to execute the search (in seconds).
+                - 'ef_construction' (int): The `efConstruction` value used.
         """
         k = 1
 
