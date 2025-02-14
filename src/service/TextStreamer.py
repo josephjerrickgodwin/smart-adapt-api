@@ -48,6 +48,34 @@ class SmartAdaptTextStreamer(AsyncTextIteratorStreamer):
         self.chunk_token_usage += num_tokens
         super().put(value)
 
+    def update_stream(
+            self,
+            text: str,
+    ):
+        # Calculate the time taken
+        current_time = int(time.time())
+        time_taken = current_time - self.created_at
+
+        # Update the response
+        self.response += text
+
+        # Construct the event
+        delta = DeltaModel(content=text, type=self.text_type)
+        choices = ChoicesModel(index=self.index, delta=delta)
+        response = LLMResponseModel(
+            choices=choices,
+            model=self.model,
+            chunk_token_usage=self.chunk_token_usage,
+            created=self.created_at,
+            message_id=self.message_id,
+            parent_id=self.parent_id,
+            time_elapsed=time_taken
+        ).to_dict()
+
+        # Format to JSON
+        response = json.dumps(response)
+        return response
+
     def on_finalized_text(
             self,
             text: str,
@@ -58,7 +86,7 @@ class SmartAdaptTextStreamer(AsyncTextIteratorStreamer):
         time_taken = current_time - self.created_at
 
         # Clean and update the response
-        filtered_text = text.replace("assistant\n\n", "").strip()
+        filtered_text = text.replace("assistant\n\n", "")
 
         response = ''
         if filtered_text or stream_end:

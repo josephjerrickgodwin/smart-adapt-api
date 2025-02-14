@@ -38,14 +38,10 @@ async def create_index(data: IndexModel) -> JSONResponse:
         # Check for existing index
         try:
             logger.info(f"Started loading the index data")
-            index_data = await storage_manager.read(
+            rag_service = await storage_manager.read(
                 user_id=user_id,
                 filename=INDEX_PREFIX
             )
-
-            # Initialize the index service
-            index_data = index_data["data"]
-            rag_service: RAGService = pickle.loads(index_data)
 
             # Generate embeddings for the new data
             logger.info("Generating embeddings for the data")

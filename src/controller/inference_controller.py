@@ -1,5 +1,7 @@
 import logging
 
+logger = logging.getLogger(__name__)
+
 from fastapi import APIRouter, status, HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -11,8 +13,6 @@ from src.service.fine_tuning.data_preprocessor import data_preprocessor
 from src.service.fine_tuning.lora_hyperparameters import lora_hyperparameters
 from src.service.fine_tuning.model_service import model_service
 from src.service.storage_manager import storage_manager
-
-logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix='/v1', tags=['Inference Controller'])
 
@@ -38,6 +38,12 @@ async def model_inference(request: InferenceRequest):
         # Get the latest user message
         query = history.pop().get("content").strip()
 
+        # Rewrite the query
+        rewritten_query = await model_service.rewrite_query(
+            current_query=query,
+            history=history
+        )
+
         # Get the index file from the DB
         logger.info(f"Started fetching the existing index")
 
@@ -56,10 +62,12 @@ async def model_inference(request: InferenceRequest):
 
             # Start search
             logger.info(f"Started querying the vector store")
-            context_list = await rag_service.search(query=query)
+            context_list = await rag_service.search(query=rewritten_query)
+
+            logger.info(f'Received a total of {len(context_list)} context')
 
             # Convert the list of context to string
-            context = '\n'.join([f"{i + 1}: {line}" for i, line in enumerate(context_list)]) if context_list else ''
+            context = '\n'.join([f"{i + 1}: {line['result']}" for i, line in enumerate(context_list)]) if context_list else ''
 
         return StreamingResponse(
             model_service.start_inference(

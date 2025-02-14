@@ -1,9 +1,11 @@
 import gc
 import logging
 import os
+import re
+import torch
+
 from threading import Thread
 from typing import List
-import torch
 from dotenv import load_dotenv
 
 from datasets import Dataset
@@ -17,6 +19,7 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     TrainingArguments,
+    AsyncTextIteratorStreamer
 )
 from trl import SFTTrainer
 
@@ -25,14 +28,14 @@ from src.exception.inference_disabled_error import InferenceDisabledError
 from src.service import prompt_service
 from src.service.TextStreamer import SmartAdaptTextStreamer
 from src.service.storage_manager import storage_manager
+from src.service.inference_model_service import inference_model_service
 
 load_dotenv()
 
 logger = logging.getLogger(__name__)
 
 # Load the Sentence Transformer Model and the HF token
-REASONING_MODEL_ID = str(os.getenv('REASONING_MODEL_ID'))
-INFERENCE_MODEL_ID = str(os.getenv('INFERENCE_MODEL_ID'))
+MODEL_ID = str(os.getenv('MODEL_ID'))
 HF_TOKEN = str(os.getenv('HF_TOKEN'))
 
 
@@ -49,10 +52,6 @@ class ModelService:
         self.tokenizer = None
         self.model = None
 
-        # Define model and tokenizer for text completion
-        self.infer_tokenizer = None
-        self.infer_model = None
-
         # Define the device
         self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
@@ -64,15 +63,13 @@ class ModelService:
         # Load weights
         self._load_weights()
 
-    def flush(self, load_reasoning_model_only: bool = False):
+    def flush(self):
         # Disable inference temporarily
         self.inference_enabled = False
 
         # Unload the thinker and inference models along with the tokenizers
         self.tokenizer = None
         self.model = None
-        self.infer_tokenizer = None
-        self.infer_model = None
 
         # Reset adapter and user details
         self.current_user = None
@@ -84,10 +81,29 @@ class ModelService:
             torch.cuda.empty_cache()
 
         # Load the model again
-        self._load_weights(load_reasoning_model_only)
+        self._load_weights()
 
         # Reset the inference status
         self.inference_enabled = True
+
+    def extract_new_query(self, text: str):
+        """
+        Extracts text between <new_query> and </new_query> tags.
+
+        Parameters:
+            text (str): The input string containing the tags.
+
+        Returns:
+            str: Extracted text or None if no match is found.
+        """
+        # Regex pattern with grouping to capture the text between the tags
+        pattern = r"<new_query>(.*?)</new_query>"
+        
+        # Search for the pattern and extract the first group if found
+        match = re.search(pattern, text)
+        
+        # Return the captured group or the original text if no match
+        return match.group(1) if match else text
 
     async def _load_adapter(self, user_id: str, merge_and_unload: bool = False):
         """
@@ -102,6 +118,8 @@ class ModelService:
         # Check for the current user
         if not self.current_user:
             self.current_user = user_id
+
+        logger.info('Started checking for LoRA adapters...')
 
         # If the user adapter is already exist, skip loading it again
         if self.lora_loaded:
@@ -143,6 +161,84 @@ class ModelService:
         # Assign the current user
         self.current_user = user_id
 
+    async def rewrite_query(
+            self,
+            current_query: str,
+            history: list
+    ):
+        logger.info('Started extracting user messages from the history...')
+        # Extract previous queries
+        previous_queries_list = [
+            f"- '{conversation.get('content', '')}'"
+            for conversation in history
+            if conversation.get('role', '') == 'user'
+        ]
+        previous_user_queries = '\n'.join(previous_queries_list)
+
+        # Add the current query below the user previous user queries
+        prompt = f'Previous Queries:\n{previous_user_queries}\nCurrent Query: *** {current_query} ***\nOutput: '
+
+        logger.info('Preparing messages for prompting the LLM...')
+
+        # Create a new history with the system prompt
+        system_prompt = prompt_service.query_rewrite_system_instruction.strip()
+        updated_history = [
+            {
+                "role": "system",
+                "content": system_prompt
+            },
+            {
+                "role": "user",
+                "content": prompt
+            }
+        ]
+        
+        # Apply chat template
+        updated_messages = self.tokenizer.apply_chat_template(updated_history, tokenize=False)
+
+        # Tokenize the messages
+        tokens = self.tokenizer(
+            updated_messages,
+            add_special_tokens=True,
+            return_tensors="pt"
+        ).to(self.device)
+
+        # Define the streamer
+        streamer = AsyncTextIteratorStreamer(
+            tokenizer=self.tokenizer,
+            skip_prompt=True,
+            skip_special_tokens=True
+        )
+
+        # Define the generation kwargs
+        thinker_kwargs = dict(
+            input_ids=tokens.input_ids,
+            max_new_tokens=512,
+            attention_mask=tokens.attention_mask,
+            pad_token_id=self.tokenizer.eos_token_id,
+            streamer=streamer
+        )
+        logger.info('Started generating the updated query...')
+
+        # Define the thread
+        thread = Thread(target=self.model.generate, kwargs=thinker_kwargs)
+
+        # Start the thread
+        thread.start()
+
+        # Start streaming the reasoning
+        text = ''
+        async for chunk in streamer:
+            if chunk:
+                text += chunk
+
+        # Extract the new query
+        new_query = self.extract_new_query(text)
+
+        logger.info('Successfully generated the updated query.')
+
+        return new_query
+
     async def start_inference(
             self,
             user_id: str,
@@ -160,15 +256,30 @@ class ModelService:
         # Load user adapter
         await self._load_adapter(user_id)
 
+        logger.info('Started re-arranging the message for inference')
+
         # Format messages
-        system_prompt_for_thinker_model = prompt_service.system_prompt_for_thinker_model
+        system_prompt_for_cot = prompt_service.system_prompt_for_thinker_model.strip()
 
         # Add context to reasoning
-        if context:
-            context = f'===================\nKnown Facts for thinking\n{context}\n==================='
-            updated_messages = f'{system_prompt_for_thinker_model}\n{context}\nQuery: {user_query}\nThought:'
-        else:
-            updated_messages = f'{system_prompt_for_thinker_model}\nQuery: {user_query}\nThought:'
+        updated_query = f'<information>\n{context}\n</information>\n{user_query}' if context else user_query
+
+        # Define the conversation
+        messages = [
+            {
+                "role": "system",
+                "content": system_prompt_for_cot
+            },
+            {
+                "role": "user",
+                "content": updated_query.strip()
+            }
+        ]
+
+        # Apply chat template
+        updated_messages = self.tokenizer.apply_chat_template(messages, tokenize=False)
+
+        logger.info('Started tokenizing the conversation')
 
         # Tokenize the messages
         tokens = self.tokenizer(
@@ -189,6 +300,8 @@ class ModelService:
             skip_special_tokens=True
         )
 
+        logger.info('Started defining the hyperparameters for reasoning')
+
         # Define the generation kwargs
         thinker_kwargs = dict(
             input_ids=tokens.input_ids,
@@ -196,9 +309,11 @@ class ModelService:
             attention_mask=tokens.attention_mask,
             pad_token_id=self.tokenizer.eos_token_id,
             # do_sample=True,
-            repetition_penalty=1.8,
+            # repetition_penalty=1.8,
             streamer=streamer
         )
+
+        logger.info('Started the reasoning process')
 
         # Define the thread
         thread = Thread(target=self.model.generate, kwargs=thinker_kwargs)
@@ -207,98 +322,51 @@ class ModelService:
         thread.start()
 
         # Start streaming the reasoning
-        async for new_text in streamer:
-            if new_text:
-                yield f'data: {new_text}\n\n'
+        async for chunk in streamer:
+            if chunk:
+                yield f'data: {chunk}\n\n'
+
+        logger.info('Extracting the reasining and preparing for inference')
 
         # Get the streamed message from the `thinker` model
         reasoning = streamer.get_response()
 
+        # Add `context` and reasoning as a new context
+        reasoned_context = f'<information>\n{context}\n\nExplanation:\n{reasoning}\n</information>'
+
         # Update the streamer for `text` streaming
         streamer.update_text_type('text')
 
-        # Re-format the user message with the context
-        custom_user_message = [{
-            "role": "user",
-            "content": f'{context}\n\nExpert Message:\n\n{reasoning}\n\nQuestion: {user_query}'.strip()
-        }]
+        logger.info('Starting the inference')
 
-        # Define the system prompt for inference
-        system_prompt_for_inference = prompt_service.inference_system_prompt
-        system_message = [{
-            "role": "system",
-            "content": system_prompt_for_inference
-        }]
-        messages = system_message + history + custom_user_message
+        # Start inference
+        async for chunk in inference_model_service.get_result(
+            query=user_query,
+            context=reasoned_context,
+            history=history
+        ):
+            yield chunk
 
-        # Apply chat template
-        updated_messages = self.infer_tokenizer.apply_chat_template(messages, tokenize=False)
+        logger.info('Request have been served successfully')
 
-        # Tokenize the messages
-        inference_tokens = self.infer_tokenizer(
-            updated_messages,
-            add_special_tokens=True,
-            return_tensors="pt"
-        ).to(self.device)
-
-        # Define the generation kwargs
-        generation_kwargs = dict(
-            input_ids=inference_tokens.input_ids,
-            max_new_tokens=max_new_tokens,
-            attention_mask=inference_tokens.attention_mask,
-            pad_token_id=self.infer_tokenizer.eos_token_id,
-            do_sample=True,
-            repetition_penalty=1.9,
-            streamer=streamer
-        )
-
-        # Define the thread
-        thread = Thread(target=self.infer_model.generate, kwargs=generation_kwargs)
-
-        # Start the thread
-        thread.start()
-
-        # Start streaming the reasoning
-        async for new_text in streamer:
-            if new_text:
-                yield f'data: {new_text}\n\n'
-
-        yield f'data: [END]\n\n'
-
-    def _load_weights(self, load_reasoning_model_only: bool = False):
+    def _load_weights(self):
         """
         Loads the `thinker` and `inference` model instances
         """
         # Load the tokenizer
-        logger.info('Started loading the `thinker` tokenizer')
+        logger.info('Started loading the tokenizer')
         self.tokenizer = AutoTokenizer.from_pretrained(
-            REASONING_MODEL_ID,
+            MODEL_ID,
             token=self.token
         )
 
         # Load the model
-        logger.info('Started loading the `thinker` model')
+        logger.info('Started loading the model')
         self.model = AutoModelForCausalLM.from_pretrained(
-            REASONING_MODEL_ID,
-            token=self.token
-        ).to(self.device)
-
-        if not load_reasoning_model_only:
-            # Load the inference model and tokenizer
-            logger.info('Started loading the `inference` tokenizer')
-            self.infer_tokenizer = AutoTokenizer.from_pretrained(
-                INFERENCE_MODEL_ID,
-                token=self.token
-            )
-            # Load the model
-            logger.info('Started loading the `inference` model')
-            self.infer_model = AutoModelForCausalLM.from_pretrained(
-                INFERENCE_MODEL_ID,
-                token=self.token
-            ).to(self.device)
-            logger.info('Successfully loaded the `thinker` and `inference` instances')
-        else:
-            logger.info('Successfully loaded the `thinker` instance')
+            MODEL_ID,
+            token=self.token,
+            device_map=self.device
+        )
 
     async def prepare_model(
             self,

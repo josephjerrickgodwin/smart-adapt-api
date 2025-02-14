@@ -56,7 +56,7 @@ async def pre_process_dataset(user_id: str, request: DatasetInsertRequest):
         logger.error(f"Pre-process dataset failed due to: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
-            detail=f'Invalid parameters detected: {str(e)}'
+            detail=str(e)
         )
     except Exception as e:
         logger.error(f"Unexpected error in pre-processing the dataset: {str(e)}")
