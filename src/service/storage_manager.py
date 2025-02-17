@@ -28,27 +28,7 @@ class StorageManager:
         os.makedirs(self.base_dir, exist_ok=True)
 
     async def get_user_data_path(self, user_id: str):
-        pruned_username = await self._sanitize_filename(user_id)
-        return os.path.join(self.base_dir, pruned_username)
-
-    @staticmethod
-    async def _sanitize_filename(user_id: str) -> str:
-        """
-        Sanitize the user_id to create a safe filename.
-
-        Replaces special characters with underscores and ensures 
-        the filename is safe for filesystem use.
-
-        :param user_id: user_id to be converted to a filename
-        :return: Sanitized filename
-        """
-        # Remove any non-alphanumeric characters except periods and @ symbol
-        sanitized = re.sub(r'[^a-zA-Z0-9.@]', '_', user_id)
-
-        # Replace remaining special characters with underscore
-        sanitized = re.sub(r'[/\\:]', '_', sanitized)
-
-        return sanitized
+        return os.path.join(self.base_dir, user_id)
 
     async def _get_user_dir(self, user_id: str) -> str:
         """
@@ -57,8 +37,7 @@ class StorageManager:
         :param user_id: Unique ID of the user
         :return: Path to the user's directory
         """
-        username = await self._sanitize_filename(user_id)
-        user_dir = os.path.join(self.base_dir, username)
+        user_dir = os.path.join(self.base_dir, user_id)
         os.makedirs(user_dir, exist_ok=True)
         return user_dir
 
@@ -73,11 +52,10 @@ class StorageManager:
         :raises FileExistsError: If file already exists
         """
         # Sanitize filename and get user directory
-        sanitized_filename = await self._sanitize_filename(filename)
         user_dir = await self._get_user_dir(user_id)
 
         # Construct full file path
-        file_path = os.path.join(user_dir, f"{sanitized_filename}.pkl")
+        file_path = os.path.join(user_dir, f"{filename}.pkl")
 
         # Check if file already exists to prevent overwriting
         if os.path.exists(file_path):
@@ -99,11 +77,10 @@ class StorageManager:
         :raises FileNotFoundError: If file does not exist
         """
         # Sanitize filename and get user directory
-        sanitized_filename = await self._sanitize_filename(filename)
         user_dir = await self._get_user_dir(user_id)
 
         # Construct full file path
-        file_path = os.path.join(user_dir, f"{sanitized_filename}.pkl")
+        file_path = os.path.join(user_dir, f"{filename}.pkl")
 
         # Read and return data from pickle file
         with open(file_path, 'rb') as f:
@@ -120,11 +97,10 @@ class StorageManager:
         :raises FileNotFoundError: If file does not exist
         """
         # Sanitize filename and get user directory
-        sanitized_filename = await self._sanitize_filename(filename)
         user_dir = await self._get_user_dir(user_id)
 
         # Construct full file path
-        file_path = os.path.join(user_dir, f"{sanitized_filename}.pkl")
+        file_path = os.path.join(user_dir, f"{filename}.pkl")
 
         # Check if file exists before updating
         if not os.path.exists(file_path):
@@ -145,11 +121,10 @@ class StorageManager:
         :return: True if file was deleted, False if file did not exist
         """
         # Sanitize filename and get user directory
-        sanitized_filename = await self._sanitize_filename(filename)
         user_dir = await self._get_user_dir(user_id)
 
         # Construct full file path
-        file_path = os.path.join(user_dir, f"{sanitized_filename}.pkl")
+        file_path = os.path.join(user_dir, f"{filename}.pkl")
 
         # Delete file if it exists, else raise FileNotFoundError
         os.remove(file_path)
@@ -163,12 +138,8 @@ class StorageManager:
 
         :return: True if file exists, False if it doesn't exist
         """
-        # Sanitize both the username and the filename
-        sanitized_user_id = await self._sanitize_filename(user_id)
-        sanitized_filename = await self._sanitize_filename(filename)
-
         # Define the full file path
-        file_path = os.path.join(self.base_dir, sanitized_user_id, sanitized_filename)
+        file_path = os.path.join(self.base_dir, user_id, filename)
 
         return os.path.exists(file_path)
 

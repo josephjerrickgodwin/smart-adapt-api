@@ -132,7 +132,7 @@ class RAGService:
     async def search(
             self,
             query: str | np.ndarray,
-            k: int = 10,
+            k: int = 0,
             return_embeddings: bool = False
     ):
         assert self.index_store is not None, "RAG initialization required!"

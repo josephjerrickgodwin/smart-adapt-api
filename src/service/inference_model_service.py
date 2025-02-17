@@ -1,7 +1,6 @@
 import os
 import logging
 import aiohttp
-import json
 
 from dotenv import load_dotenv
 from typing import List, Dict, Any
@@ -36,13 +35,13 @@ class InferenceModelService:
             async with session.post(
                 url=self.inference_node,
                 headers=self.headers,
-                json=request_body
+                json=request_body,
+                timeout=None
             ) as response:
                 if response.status == 200:
                     # Stream the response content in chunks
                     async for chunk in response.content.iter_chunked(1024):
                         chunk = chunk.decode('utf-8')
-                        chunk = chunk.replace('data: ', '')
                         yield chunk
                 else:
                     response.raise_for_status()

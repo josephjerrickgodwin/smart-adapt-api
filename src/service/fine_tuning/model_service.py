@@ -255,38 +255,8 @@ class ModelService:
 
         # Load user adapter
         await self._load_adapter(user_id)
-
-        logger.info('Started re-arranging the message for inference')
-
-        # Format messages
-        system_prompt_for_cot = prompt_service.system_prompt_for_thinker_model.strip()
-
-        # Add context to reasoning
-        updated_query = f'<information>\n{context}\n</information>\n{user_query}' if context else user_query
-
-        # Define the conversation
-        messages = [
-            {
-                "role": "system",
-                "content": system_prompt_for_cot
-            },
-            {
-                "role": "user",
-                "content": updated_query.strip()
-            }
-        ]
-
-        # Apply chat template
-        updated_messages = self.tokenizer.apply_chat_template(messages, tokenize=False)
-
-        logger.info('Started tokenizing the conversation')
-
-        # Tokenize the messages
-        tokens = self.tokenizer(
-            updated_messages,
-            add_special_tokens=True,
-            return_tensors="pt"
-        ).to(self.device)
+        
+        logger.info(f'Context size: {len(context)}')
 
         # Define the streamer
         streamer = SmartAdaptTextStreamer(
@@ -300,43 +270,76 @@ class ModelService:
             skip_special_tokens=True
         )
 
-        logger.info('Started defining the hyperparameters for reasoning')
+        reasoned_context = ''
+        if context:
+            logger.info('Started re-arranging the message for reasoning')
 
-        # Define the generation kwargs
-        thinker_kwargs = dict(
-            input_ids=tokens.input_ids,
-            max_new_tokens=512,
-            attention_mask=tokens.attention_mask,
-            pad_token_id=self.tokenizer.eos_token_id,
-            # do_sample=True,
-            # repetition_penalty=1.8,
-            streamer=streamer
-        )
+            # Format messages
+            system_prompt_for_cot = prompt_service.system_prompt_for_thinker_model.strip()
 
-        logger.info('Started the reasoning process')
+            # Add context to reasoning
+            updated_query = f'<information>\n{context}\n</information>\n{user_query}' if context else user_query
 
-        # Define the thread
-        thread = Thread(target=self.model.generate, kwargs=thinker_kwargs)
+            # Define the conversation
+            messages = [
+                {
+                    "role": "system",
+                    "content": system_prompt_for_cot
+                },
+                {
+                    "role": "user",
+                    "content": updated_query.strip()
+                }
+            ]
 
-        # Start the thread
-        thread.start()
+            # Apply chat template
+            updated_messages = self.tokenizer.apply_chat_template(messages, tokenize=False)
 
-        # Start streaming the reasoning
-        async for chunk in streamer:
-            if chunk:
-                yield f'data: {chunk}\n\n'
+            logger.info('Started tokenizing the conversation')
 
-        logger.info('Extracting the reasining and preparing for inference')
+            # Tokenize the messages
+            tokens = self.tokenizer(
+                updated_messages,
+                add_special_tokens=True,
+                return_tensors="pt"
+            ).to(self.device)
 
-        # Get the streamed message from the `thinker` model
-        reasoning = streamer.get_response()
+            logger.info('Started defining the hyperparameters for reasoning')
 
-        # Add `context` and reasoning as a new context
-        reasoned_context = f'<information>\n{context}\n\nExplanation:\n{reasoning}\n</information>'
+            # Define the generation kwargs
+            thinker_kwargs = dict(
+                input_ids=tokens.input_ids,
+                max_new_tokens=512,
+                attention_mask=tokens.attention_mask,
+                pad_token_id=self.tokenizer.eos_token_id,
+                # do_sample=True,
+                # repetition_penalty=1.8,
+                streamer=streamer
+            )
+
+            logger.info('Started the reasoning process')
+
+            # Define the thread
+            thread = Thread(target=self.model.generate, kwargs=thinker_kwargs)
+
+            # Start the thread
+            thread.start()
+
+            # # Start streaming the reasoning
+            # async for chunk in streamer:
+            #     if chunk:
+            #         yield f'data: {chunk}\n\n'
+
+            logger.info('Extracting the reasining and preparing for inference')
+
+            # Get the streamed message from the `thinker` model
+            reasoning = streamer.get_response()
+
+            # Add `context` and reasoning as a new context
+            reasoned_context = f'<information>\n{context}\n\nExplanation:\n{reasoning}\n</information>'
 
         # Update the streamer for `text` streaming
         streamer.update_text_type('text')
-
         logger.info('Starting the inference')
 
         # Start inference

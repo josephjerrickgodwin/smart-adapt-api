@@ -85,15 +85,12 @@ class SmartAdaptTextStreamer(AsyncTextIteratorStreamer):
         current_time = int(time.time())
         time_taken = current_time - self.created_at
 
-        # Clean and update the response
-        filtered_text = text.replace("assistant\n\n", "")
-
         response = ''
-        if filtered_text or stream_end:
-            self.response += filtered_text
+        if text or stream_end:
+            self.response += text
 
             # Construct the event
-            delta = DeltaModel(content=filtered_text, type=self.text_type)
+            delta = DeltaModel(content=text, type=self.text_type)
             choices = ChoicesModel(index=self.index, delta=delta)
             response = LLMResponseModel(
                 choices=choices,

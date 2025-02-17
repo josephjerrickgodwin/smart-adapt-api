@@ -1,7 +1,5 @@
 import logging
 
-logger = logging.getLogger(__name__)
-
 from fastapi import APIRouter, status, HTTPException
 from fastapi.responses import StreamingResponse
 
@@ -15,6 +13,8 @@ from src.service.fine_tuning.model_service import model_service
 from src.service.storage_manager import storage_manager
 
 router = APIRouter(prefix='/v1', tags=['Inference Controller'])
+
+logger = logging.getLogger(__name__)
 
 
 @router.post("/completions", status_code=status.HTTP_200_OK)
@@ -38,14 +38,18 @@ async def model_inference(request: InferenceRequest):
         # Get the latest user message
         query = history.pop().get("content").strip()
 
-        # Rewrite the query
-        rewritten_query = await model_service.rewrite_query(
-            current_query=query,
-            history=history
-        )
+        # Rewrite the query excluding the first query
+        if len(history) > 1:
+            rewritten_query = await model_service.rewrite_query(
+                current_query=query,
+                history=history
+            )
+            logger.info(f'Rewritten query: {rewritten_query}')
+        else:
+            rewritten_query = query
 
         # Get the index file from the DB
-        logger.info(f"Started fetching the existing index")
+        logger.info("Started fetching the existing index")
 
         # Check if an index is available for the user
         index_exist = await storage_manager.check_file_exists(
@@ -59,11 +63,9 @@ async def model_inference(request: InferenceRequest):
                 user_id=user_id,
                 filename='index'
             )
-
             # Start search
             logger.info(f"Started querying the vector store")
             context_list = await rag_service.search(query=rewritten_query)
-
             logger.info(f'Received a total of {len(context_list)} context')
 
             # Convert the list of context to string
