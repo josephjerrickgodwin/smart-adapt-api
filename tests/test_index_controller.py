@@ -1,7 +1,7 @@
 import unittest
 from fastapi.testclient import TestClient
 from unittest.mock import patch
-from main import app
+from main_old import app
 
 
 class TestIndexController(unittest.TestCase):
