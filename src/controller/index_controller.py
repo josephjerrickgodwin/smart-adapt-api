@@ -13,6 +13,7 @@ from src.model.status_enum import Status
 from src.service.fine_tuning.data_preprocessor import data_preprocessor
 from src.service.rag_service import RAGService
 from src.service.storage_manager import storage_manager
+from src.service.utils.storage.storage_service import Storage
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,7 @@ INDEX_PREFIX = 'Index'
 @router.post("/create", status_code=status.HTTP_201_CREATED)
 async def create_index(data: IndexModel) -> JSONResponse:
     user_id = data.user_id
+    session_id = data.session_id
     user_data = data.data
 
     try:
@@ -38,6 +40,7 @@ async def create_index(data: IndexModel) -> JSONResponse:
         # Check for existing index
         try:
             logger.info(f"Started loading the index data")
+            rag_service = Storage.get_file(f'{user_id}')
             rag_service = await storage_manager.read(
                 user_id=user_id,
                 filename=INDEX_PREFIX
@@ -49,7 +52,8 @@ async def create_index(data: IndexModel) -> JSONResponse:
 
             # Update the index module
             await rag_service.index_store.add_index(
-                embeddings=embeddings,
+                session_id=session_id,
+                vectors=embeddings,
                 labels=processed_data
             )
 
@@ -74,6 +78,7 @@ async def create_index(data: IndexModel) -> JSONResponse:
             # Start the simulation
             logger.info('Started generating hyperparameters and simulation. This may take a while.')
             _ = await rag_service.configure_vector_store(
+                session_id=session_id,
                 embeddings=embeddings,
                 docs=processed_data
             )
@@ -89,12 +94,14 @@ async def create_index(data: IndexModel) -> JSONResponse:
         # Get the optimal parameters
         optimal_params = await rag_service.get_optimal_hyperparameters()
 
-        payload = {
-            "user_id": user_id,
-            "hyperparameters": optimal_params,
-            "status": 'SUCCESS'
-        }
-        return JSONResponse(payload, status_code=status.HTTP_201_CREATED)
+        return JSONResponse(
+            {
+                "user_id": user_id,
+                "hyperparameters": optimal_params,
+                "status": 'SUCCESS'
+            },
+            status_code=status.HTTP_201_CREATED
+        )
 
     except UnicodeDecodeErrors as e:
         logger.error(f"Pre-process dataset failed due to: {str(e)}")

@@ -5,4 +5,5 @@ from pydantic import BaseModel
 
 class IndexModel(BaseModel):
     user_id: str
+    session_id: str
     data: List[int]

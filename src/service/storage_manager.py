@@ -1,6 +1,5 @@
 import os
 import pickle
-import re
 from typing import Any
 
 from src.exception import DuplicateUserError
@@ -12,9 +11,6 @@ class StorageManager:
 
     This class provides CRUD (Create, Read, Update, Delete) operations for pickle files,
     with each file identified by a user_id (sanitized to be filename-friendly).
-
-    Files are stored in a directory structure: 
-    /data/username/filename.pkl
     """
 
     def __init__(self, base_dir: str = 'data'):
@@ -129,7 +125,7 @@ class StorageManager:
         # Delete file if it exists, else raise FileNotFoundError
         os.remove(file_path)
 
-    async def check_file_exists(self, user_id: str, filename: str):
+    async def check_data_exists(self, user_id: str, filename: str):
         """
         Check if a file exists under the user's directory
 

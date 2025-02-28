@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Dict
 
 import faiss
 import numpy as np
@@ -7,22 +7,13 @@ import torch.nn as nn
 
 
 class IndexStore:
-    def __init__(
-        self,
-        input_size: int,
-        ef_construction: int,
-        ef_search: int,
-        m: int
-    ):
-        # Create the HNSW index
-        self.index = faiss.IndexHNSWFlat(input_size, m)
+    def __init__(self, input_size: int):
+        self.input_size = input_size
 
-        # Apply the hyperparameters
-        self.index.hnsw.efConstruction = ef_construction
-        self.index.hnsw.efSearch = ef_search
-
-        self.labels = []
-        self.embeddings = None
+        # Store multiple indices based on session IDs
+        self.indices: Dict[str, faiss.IndexHNSWFlat] = {}
+        self.labels: Dict[str, List[str]] = {}
+        self.embeddings: Dict[str, np.ndarray | None] = {}
 
         self.cos = nn.CosineSimilarity(dim=1, eps=1e-6)
 
@@ -33,22 +24,50 @@ class IndexStore:
     def _reciprocal_rank_fusion(similarity_scores: np.ndarray):
         return 1 / (1 + np.argsort(similarity_scores))
 
-    def _get_levels(self):
-        levels = faiss.vector_to_array(self.index.hnsw.levels)
-        return np.bincount(levels)
+    async def create_session_for_index(
+            self,
+            session_id: str,
+            ef_construction: int,
+            ef_search: int,
+            m: int
+    ):
+        """Creates a new index for a given session ID."""
+        if session_id in self.indices:
+            return  # Index already exists for this session
 
-    async def add_index(self, vectors: np.ndarray, labels: List[str]):
+        # Create a new FAISS index for the session
+        index = faiss.IndexHNSWFlat(self.input_size, m)
+        index.hnsw.efConstruction = ef_construction
+        index.hnsw.efSearch = ef_search
+
+        # Store in the dictionary
+        self.indices[session_id] = index
+        self.labels[session_id] = []
+        self.embeddings[session_id] = None
+
+    async def add_index(self, session_id: str, vectors: np.ndarray, labels: List[str]):
+        assert session_id in self.indices, "Session index not found. Call create_session_index first."
+
         # Add the embeddings to the index
-        self.index.add(vectors)
+        index = self.indices[session_id]
 
-        # Update the labels list
-        self.labels.extend(labels)
+        # Add embeddings to the FAISS index
+        index.add(vectors)
 
-        # Update the embeddings array
-        if self.embeddings is None:
-            self.embeddings = vectors
+        # Update labels and embeddings for the session
+        self.labels[session_id].extend(labels)
+
+        if self.embeddings[session_id] is None:
+            self.embeddings[session_id] = vectors
         else:
-            self.embeddings = np.vstack((self.embeddings, vectors))
+            self.embeddings[session_id] = np.vstack((self.embeddings[session_id], vectors))
+
+    async def remove_index(self, session_id: str):
+        """Removes the FAISS index for a given session."""
+        if session_id in self.indices:
+            del self.indices[session_id]
+            del self.labels[session_id]
+            del self.embeddings[session_id]
 
     async def search_by_top_k(
             self,
@@ -67,52 +86,62 @@ class IndexStore:
 
         Returns:
             list: A list of dictionaries containing 'label', 'score', and optionally 'embeddings' keys.
+
+        Raises:
+            ValueError:
+                If the query array is empty or not a valid NumPy array or the index does not exist.
+            Exception:
+                For any other errors encountered during the search process.
         """
-        labels, embeddings = [], []
+        if not self.indices:
+            raise ValueError('Index is not initialized!')
+
+        results = []
 
         # Search using HNSW
-        _, indices = self.index.search(query_embedding, top_k)
+        for session_id, index in self.indices.items():
+            _, indices = index.search(query_embedding, top_k)
 
-        # Reshape the indices to 1D
-        indices = indices.reshape(-1)
+            # Reshape the indices to 1D
+            indices = indices.reshape(-1)
 
-        for idx in indices:
-            label = self.labels[idx]
-            embedding = self.embeddings[idx]
+            labels, embeddings = [], []
+            for idx in indices:
+                label = self.labels[session_id][idx]
+                embedding = self.embeddings[session_id][idx]
 
-            # Reshape to (1, -1)
-            embedding = torch.tensor(embedding, dtype=torch.float32).reshape(1, -1)
+                # Reshape to (1, -1)
+                embedding = torch.tensor(embedding, dtype=torch.float32).reshape(1, -1)
 
-            labels.append(label)
-            embeddings.append(embedding)
+                labels.append(label)
+                embeddings.append(embedding)
 
-        # Stack the embeddings
-        embeddings = torch.cat(embeddings, dim=0)
+            # Stack the embeddings
+            embeddings = torch.cat(embeddings, dim=0)
 
-        # Convert query_embedding to tensors
-        query_tensor = torch.tensor(query_embedding, dtype=torch.float32)
-        if query_tensor.dim() == 1:
-            query_tensor = query_tensor.unsqueeze(0)
+            # Convert query_embedding to tensors
+            query_tensor = torch.tensor(query_embedding, dtype=torch.float32)
+            if query_tensor.dim() == 1:
+                query_tensor = query_tensor.unsqueeze(0)
 
-        # Compute cosine similarity
-        cosine_similarities = self.cos(embeddings, query_tensor)
+            # Compute cosine similarity
+            cosine_similarities = self.cos(embeddings, query_tensor)
 
-        # Ensure top-k does not exceed available samples
-        top_k = min(top_k, len(cosine_similarities))
+            # Ensure top-k does not exceed available samples
+            top_k = min(top_k, len(cosine_similarities))
 
-        # Get top-k indices and scores
-        top_k_scores, top_k_indices = torch.topk(cosine_similarities, k=top_k)
+            # Get top-k indices and scores
+            top_k_scores, top_k_indices = torch.topk(cosine_similarities, k=top_k)
 
-        # Prepare the result
-        result = []
-        for score, idx in zip(top_k_scores, top_k_indices):
-            label = labels[idx]
-            entry = {'label': label, 'score': score.item()}
-            if return_embeddings:
-                entry['embeddings'] = embeddings[idx].tolist()
-            result.append(entry)
+            # Prepare the result
+            for score, idx in zip(top_k_scores, top_k_indices):
+                label = labels[idx]
+                entry = {'label': label, 'score': score.item()}
+                if return_embeddings:
+                    entry['embeddings'] = embeddings[idx].tolist()
+                results.append(entry)
 
-        return result
+        return results
 
     async def search_by_threshold(
             self,
@@ -137,41 +166,49 @@ class IndexStore:
 
         Raises:
             ValueError:
-                If the query array is empty or not a valid NumPy array.
+                If the query array is empty or not a valid NumPy array or the index does not exist.
             Exception:
                 For any other errors encountered during the search process.
         """
-        assert self.index is not None, "Index has not been initialized"
-
-        # Search using HNSW
-        distances, indices = self.index.search(query_embedding, len(self.labels))
-
-        # Reshape the result to 1D
-        distances = distances.reshape(-1)
-        indices = indices.reshape(-1)
-
-        # Convert the query to a tensor
-        query_embedding = torch.tensor(query_embedding, dtype=torch.float32)
-        if query_embedding.dim() == 1:
-            query_embedding = query_embedding.unsqueeze(0)
+        if not self.indices:
+            raise ValueError('Index is not initialized!')
 
         results, scores = [], []
-        for idx in indices:
-            # Compute the distance score
-            distance = distances[idx]
-            if distance != -1:
-                embedding = torch.tensor(self.embeddings[idx], dtype=torch.float32).reshape(1, -1)
+
+        for session_id, index in self.indices.items():
+            current_labels = self.labels[session_id]
+            current_embeddings = self.embeddings[session_id]
+
+            # Search using HNSW
+            distances, indices = index.search(query_embedding, len(current_labels))
+
+            # Reshape the result to 1D
+            distances = distances.reshape(-1)
+            indices = indices.reshape(-1)
+
+            # Convert the query to a tensor
+            query_embedding = torch.tensor(query_embedding, dtype=torch.float32)
+            if query_embedding.dim() == 1:
+                query_embedding = query_embedding.unsqueeze(0)
+
+            for idx in indices:
+                # Compute the distance score
+                distance = distances[idx]
+                if distance == -1:
+                    continue    # Skip is the distance is too long against the query
+
+                embedding = torch.tensor(current_embeddings[idx], dtype=torch.float32).reshape(1, -1)
                 score = self.cos(query_embedding, embedding).item()
                 scores.append(score)
                 if return_embeddings:
                     results.append({
-                        'label': self.labels[idx],
+                        'label': current_labels[idx],
                         'embeddings': embedding,
                         'score': score
                     })
                 else:
                     results.append({
-                        'label': self.labels[idx],
+                        'label': current_labels[idx],
                         'score': score
                     })
 
@@ -190,7 +227,7 @@ class IndexStore:
             top_k: int = 0,
             return_embeddings: bool = False
     ):
-        assert self.index is not None, "Index has not been initialized"
+        assert self.indices is not None, "Index has not been initialized"
 
         results = []
         for i in range(len(query_embeddings)):

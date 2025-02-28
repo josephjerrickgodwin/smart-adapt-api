@@ -52,7 +52,7 @@ async def model_inference(request: InferenceRequest):
         logger.info("Started fetching the existing index")
 
         # Check if an index is available for the user
-        index_exist = await storage_manager.check_file_exists(
+        index_exist = await storage_manager.check_data_exists(
             user_id=user_id,
             filename='index'
         )

@@ -98,7 +98,7 @@ class RAGService:
             'data_count': len(self.index_store)
         }
 
-    async def configure_vector_store(self, embeddings: np.ndarray, docs: List[str]):
+    async def configure_vector_store(self, session_id: str, embeddings: np.ndarray, docs: List[str]):
         # Select the optimal hyperparameters
         results, optimal_result = await index_tools.get_optimal_hyperparameters(
             vectors=embeddings,
@@ -116,15 +116,22 @@ class RAGService:
 
         # Initialize the Vector Store
         logger.info('Building the Vector Store')
-        self.index_store = IndexStore(
-            input_size=embeddings.shape[1],
+        self.index_store = IndexStore(embeddings.shape[1])
+
+        # Create a new session for storing the index
+        await self.index_store.create_session_for_index(
+            session_id=session_id,
             ef_construction=self.ef_construction,
             ef_search=self.ef_search,
             m=self.m
         )
 
         # Add the embeddings and the labels to the Vector Store
-        await self.index_store.add_index(vectors=embeddings, labels=docs)
+        await self.index_store.add_index(
+            session_id=session_id,
+            vectors=embeddings,
+            labels=docs
+        )
         logger.info('Indexing completed successfully.')
 
         return {'status': Status.SUCCESS.value}

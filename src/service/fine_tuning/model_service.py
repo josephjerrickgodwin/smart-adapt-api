@@ -1,3 +1,4 @@
+import asyncio
 import gc
 import logging
 import os
@@ -61,7 +62,7 @@ class ModelService:
         self.inference_enabled = True
 
         # Load weights
-        self._load_weights()
+        # self._load_weights()
 
     def flush(self):
         # Disable inference temporarily
@@ -86,7 +87,8 @@ class ModelService:
         # Reset the inference status
         self.inference_enabled = True
 
-    def extract_new_query(self, text: str):
+    @classmethod
+    def _extract_new_query(cls, text: str):
         """
         Extracts text between <new_query> and </new_query> tags.
 
@@ -132,9 +134,10 @@ class ModelService:
                 self.lora_loaded = False
 
         # Check for LoRA adapters for the current user in the local storage
-        lora_exist = await storage_manager.check_file_exists(
+        lora_adapter_folder_name = f'{user_id}_lora_adapter'
+        lora_exist = await storage_manager.check_data_exists(
             user_id=user_id,
-            filename=self.data_model_name
+            filename=lora_adapter_folder_name
         )
         logger.info(f"{'Found LoRA adapters and loading to the model' if lora_exist else 'Found no LoRA adapters'}")
 
@@ -142,7 +145,7 @@ class ModelService:
         if lora_exist:
             user_data_weights = await storage_manager.read(
                 user_id=user_id,
-                filename=self.data_model_name
+                filename=lora_adapter_folder_name
             )
             peft_config = PeftConfig.from_pretrained(user_data_weights)
             self.model = PeftModel.from_pretrained(
@@ -233,7 +236,7 @@ class ModelService:
                 text += chunk
 
         # Extract the new query
-        new_query = self.extract_new_query(text)
+        new_query = self._extract_new_query(text)
 
         logger.info('Successfully generated the updated query.')
 
@@ -255,7 +258,7 @@ class ModelService:
 
         # Load user adapter
         await self._load_adapter(user_id)
-        
+
         logger.info(f'Context size: {len(context)}')
 
         # Define the streamer
@@ -352,6 +355,87 @@ class ModelService:
 
         logger.info('Request have been served successfully')
 
+    async def test_completions(
+            self,
+            user_id: str,
+            messages: list,
+            stream: bool,
+            **params,
+    ):
+        words = [
+            'h', 'e', 'l', 'l', 'o', ', ',
+            'H', 'o', 'w', ' c', 'a', 'n', ' I ', 'h', 'e', 'l', 'p ',
+            'y', 'o', 'u', '?']
+        if stream:
+            for word in words:
+                await asyncio.sleep(0.1)
+                yield word
+        else:
+            yield ''.join(words)
+
+    async def start_completions(
+            self,
+            user_id: str,
+            messages: list,
+            stream: bool,
+            **params,
+    ):
+        if not self.inference_enabled:
+            raise InferenceDisabledError("The model is being trained. Please try again later!")
+
+        # Load user adapter
+        await self._load_adapter(user_id)
+
+        # Define the streamer
+        logger.info('Initializing the tokenizer properties')
+        streamer = AsyncTextIteratorStreamer(
+            tokenizer=self.tokenizer,
+            skip_prompt=True,
+            skip_special_tokens=True
+        )
+
+        # Apply chat template
+        logger.info('Converting messages into tokens')
+        updated_messages = self.tokenizer.apply_chat_template(messages, tokenize=False)
+
+        # Tokenize the messages
+        tokens = self.tokenizer(
+            updated_messages,
+            add_special_tokens=True,
+            return_tensors="pt"
+        ).to(self.device)
+
+        logger.info('Preparing the additional kwargs for inference')
+
+        # Define the generation kwargs
+        thinker_kwargs = dict(
+            input_ids=tokens.input_ids,
+            attention_mask=tokens.attention_mask,
+            pad_token_id=self.tokenizer.eos_token_id,
+            streamer=streamer,
+            **params
+        )
+
+        logger.info('Started the response generation')
+
+        # Define the thread
+        thread = Thread(target=self.model.generate, kwargs=thinker_kwargs)
+
+        # Start the thread
+        thread.start()
+
+        # Start streaming the reasoning
+        if stream:
+            async for chunk in streamer:
+                yield chunk
+        else:
+            chunks = ''
+            async for chunk in streamer:
+                chunks += chunk
+            yield chunks
+
+        logger.info('Request have been served successfully')
+
     def _load_weights(self):
         """
         Loads the `thinker` and `inference` model instances
@@ -420,23 +504,23 @@ class ModelService:
             report_to: str = 'none'
     ):
         """
-            Fine-tune the model with the given dataset.
+        Fine-tune the model with the given dataset.
 
-            Args:
-                user_id (str): Unique ID of the user
-                dataset (List[str]): Preprocessed text chunks
-                r (int): LoRA rank
-                lora_alpha (int): LoRA scaling factor
-                num_epochs (int): Number of training epochs
-                max_seq_len (int): Maximum sequence length from the dataset
-                learning_rate (float): Learning rate for training
-                per_device_train_batch_size (int): Training batch size per device
-                per_device_eval_batch_size (int): Evaluation batch size per device
-                gradient_accumulation_steps (int): Gradient accumulation steps
-                report_to (str): Report the training and evaluation results
+        Args:
+            user_id (str): Unique ID of the user
+            dataset (List[str]): Preprocessed text chunks
+            r (int): LoRA rank
+            lora_alpha (int): LoRA scaling factor
+            num_epochs (int): Number of training epochs
+            max_seq_len (int): Maximum sequence length from the dataset
+            learning_rate (float): Learning rate for training
+            per_device_train_batch_size (int): Training batch size per device
+            per_device_eval_batch_size (int): Evaluation batch size per device
+            gradient_accumulation_steps (int): Gradient accumulation steps
+            report_to (str): Report the training and evaluation results
 
-            Yields:
-                str: Progress updates during fine-tuning
+        Yields:
+            str: Progress updates during fine-tuning
         """
         if not self.inference_enabled:
             raise FineTuningDisabledError('A fine-tuning task is in progress!')
