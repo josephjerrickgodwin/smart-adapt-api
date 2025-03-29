@@ -20,6 +20,7 @@ from src.model.files import (
     FileModelResponse,
     Files, FileMeta,
 )
+from src.service.embedding_service import embedding_service
 from src.service.env import SRC_LOG_LEVELS
 from src.service.fine_tuning.data_preprocessor import data_preprocessor
 from src.service.rag_service import RAGService
@@ -51,6 +52,11 @@ async def upload_file(
         created_at = int(time.time())
         un_sanitized_filename = file.filename
         filename = os.path.basename(un_sanitized_filename)
+
+        raise HTTPException(
+            status_code=status.HTTP_304_NOT_MODIFIED,
+            detail=f"Session ID: {session_id}",
+        )
 
         # replace filename with uuid
         id = str(uuid.uuid4())
@@ -104,7 +110,7 @@ async def upload_file(
         if rag_service:
             # Generate embeddings for the new data
             log.info("Generating embeddings for the data")
-            embeddings = await rag_service.get_embeddings(documents)
+            embeddings = await embedding_service.get_embeddings(documents)
 
             # Add new data to the index
             await rag_service.index_store.add_index(
@@ -118,7 +124,7 @@ async def upload_file(
 
             # Generate embeddings for the new data
             log.info("Generating embeddings for the data")
-            embeddings = await rag_service.get_embeddings(documents)
+            embeddings = await embedding_service.get_embeddings(documents)
 
             # Start the simulation
             log.info('Started generating hyperparameters and simulation. This may take a while.')

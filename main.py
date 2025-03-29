@@ -268,7 +268,6 @@ from src.service.utils.storage.retrieval_service import (
 from src.service.utils.task_service import stop_task, list_tasks  # Import from tasks.py
 
 if SAFE_MODE:
-    print("SAFE MODE ENABLED")
     Functions.deactivate_all_functions()
 
 logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
@@ -330,17 +329,10 @@ app.state.config.OLLAMA_API_CONFIGS = OLLAMA_API_CONFIGS
 
 app.state.OLLAMA_MODELS = {}
 
-########################################
-#
-# OPENAI
-#
-########################################
-
 app.state.config.ENABLE_OPENAI_API = ENABLE_OPENAI_API
 app.state.config.OPENAI_API_BASE_URLS = OPENAI_API_BASE_URLS
 app.state.config.OPENAI_API_KEYS = OPENAI_API_KEYS
 app.state.config.OPENAI_API_CONFIGS = OPENAI_API_CONFIGS
-
 app.state.OPENAI_MODELS = {}
 
 ########################################
@@ -726,9 +718,16 @@ async def inspect_websocket(request: Request, call_next):
     return await call_next(request)
 
 
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=CORS_ALLOW_ORIGIN,
+#     allow_credentials=True,
+#     allow_methods=["*"],
+#     allow_headers=["*"],
+# )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=CORS_ALLOW_ORIGIN,
+    allow_origins=['http://localhost:5173'],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -752,60 +751,6 @@ for router in routers:
 
 @app.get("/api/models")
 async def get_models(request: Request, user=Depends(get_verified_user)):
-    # def get_filtered_models(models, user):
-    #     filtered_models = []
-    #     for model in models:
-    #         if model.get("arena"):
-    #             if has_access(
-    #                 user.id,
-    #                 type="read",
-    #                 access_control=model.get("info", {})
-    #                 .get("meta", {})
-    #                 .get("access_control", {}),
-    #             ):
-    #                 filtered_models.append(model)
-    #             continue
-    #
-    #         model_info = Models.get_model_by_id(model["id"])
-    #         if model_info:
-    #             if user.id == model_info.user_id or has_access(
-    #                 user.id, type="read", access_control=model_info.access_control
-    #             ):
-    #                 filtered_models.append(model)
-    #
-    #     return filtered_models
-    #
-    # models = await get_all_models(request)
-    #
-    # # Filter out filter pipelines
-    # models = [
-    #     model
-    #     for model in models
-    #     if "pipeline" not in model or model["pipeline"].get("type", None) != "filter"
-    # ]
-    #
-    # model_order_list = request.app.state.config.MODEL_ORDER_LIST
-    # if model_order_list:
-    #     model_order_dict = {model_id: i for i, model_id in enumerate(model_order_list)}
-    #     # Sort models by order list priority, with fallback for those not in the list
-    #     models.sort(
-    #         key=lambda x: (model_order_dict.get(x["id"], float("inf")), x["name"])
-    #     )
-    #
-    # # Filter out models that the user does not have access to
-    # if user.role == "user" and not BYPASS_MODEL_ACCESS_CONTROL:
-    #     models = get_filtered_models(models, user)
-
-    # models = [
-    #     {
-    #         "id": "SmartAdapt",
-    #         "name": "SmartAdapt Intelligence",
-    #         "object": "model",
-    #         "created": int(time.time()),
-    #         "owned_by": "SmartAdapt AI"
-    #     }
-    # ]
-
     all_models = Models.get_all_models()
     models = [
         {
@@ -817,9 +762,6 @@ async def get_models(request: Request, user=Depends(get_verified_user)):
             "pipe": {"type": "pipe"},
         }
         for model in all_models
-        if user.id == model.user_id or has_access(
-            user.id, type="read", access_control=model.access_control
-        )
     ]
 
     log.debug(
@@ -893,11 +835,6 @@ async def chat_completion(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(ex),
         )
-
-
-# Alias for chat_completion (Legacy)
-generate_chat_completions = chat_completion
-generate_chat_completion = chat_completion
 
 
 @app.post("/api/chat/completed")
@@ -998,9 +935,9 @@ async def get_app_config(request: Request):
                 {
                     "enable_direct_connections": app.state.config.ENABLE_DIRECT_CONNECTIONS,
                     "enable_channels": app.state.config.ENABLE_CHANNELS,
-                    "enable_web_search": app.state.config.ENABLE_RAG_WEB_SEARCH,
-                    "enable_code_interpreter": app.state.config.ENABLE_CODE_INTERPRETER,
-                    "enable_image_generation": app.state.config.ENABLE_IMAGE_GENERATION,
+                    "enable_web_search": False,
+                    "enable_code_interpreter": False,
+                    "enable_image_generation": False,
                     "enable_autocomplete_generation": app.state.config.ENABLE_AUTOCOMPLETE_GENERATION,
                     "enable_community_sharing": app.state.config.ENABLE_COMMUNITY_SHARING,
                     "enable_message_rating": app.state.config.ENABLE_MESSAGE_RATING,
@@ -1129,33 +1066,6 @@ async def oauth_callback(provider: str, request: Request, response: Response):
     return await oauth_manager.handle_callback(request, provider, response)
 
 
-@app.get("/manifest.json")
-async def get_manifest_json():
-    return {
-        "name": app.state.WEBUI_NAME,
-        "short_name": app.state.WEBUI_NAME,
-        "description": "Open WebUI is an open, extensible, user-friendly interface for AI that adapts to your workflow.",
-        "start_url": "/",
-        "display": "standalone",
-        "background_color": "#343541",
-        "orientation": "natural",
-        "icons": [
-            {
-                "src": "/static/logo.png",
-                "type": "image/png",
-                "sizes": "500x500",
-                "purpose": "any",
-            },
-            {
-                "src": "/static/logo.png",
-                "type": "image/png",
-                "sizes": "500x500",
-                "purpose": "maskable",
-            },
-        ],
-    }
-
-
 @app.get("/opensearch.xml")
 async def get_opensearch_xml():
     xml_content = rf"""
@@ -1177,36 +1087,10 @@ async def healthcheck_with_db():
     return {"status": True}
 
 
-# app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
-# app.mount("/cache", StaticFiles(directory=CACHE_DIR), name="cache")
-
-
-def swagger_ui_html(*args, **kwargs):
-    return get_swagger_ui_html(
-        *args,
-        **kwargs,
-        swagger_js_url="/static/swagger-ui/swagger-ui-bundle.js",
-        swagger_css_url="/static/swagger-ui/swagger-ui.css",
-        swagger_favicon_url="/static/swagger-ui/favicon.png",
-    )
-
-
-# applications.get_swagger_ui_html = swagger_ui_html
-
-# if os.path.exists(FRONTEND_BUILD_DIR):
-#     mimetypes.add_type("text/javascript", ".js")
-#     app.mount(
-#         "/",
-#         SPAStaticFiles(directory=FRONTEND_BUILD_DIR, html=True),
-#         name="spa-static-files",
-#     )
-# else:
-#     log.warning(f"Frontend build directory not found at '{FRONTEND_BUILD_DIR}'. Serving API only.")
-
 if __name__ == "__main__":
     uvicorn.run(
-        "main_new:app",
-        host="0.0.0.0",
+        "main:app",
+        host="localhost",
         port=8080,
         reload=False,
         log_level="debug"

@@ -66,8 +66,11 @@ class DataPreprocessor:
 
         for word in words:
             word = word.strip()
-            if current_length + len(word) > chunk_size:
-                chunks.append(" ".join(current_chunk))
+            if (
+                    word == '.' and current_length + len(word) > chunk_size
+            ) or current_length + len(word) > chunk_size:
+                context = " ".join(current_chunk)
+                chunks.append(context + word)
                 current_chunk = []
                 current_length = 0
             current_chunk.append(word)

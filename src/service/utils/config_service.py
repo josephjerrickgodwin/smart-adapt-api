@@ -1018,12 +1018,6 @@ def validate_cors_origin(origin):
 # CORS_ALLOW_ORIGIN=http://localhost:5173;http://localhost:8080
 # in your .env file depending on your frontend port, 5173 in this case.
 CORS_ALLOW_ORIGIN = os.environ.get("CORS_ALLOW_ORIGIN", "*").split(";")
-
-if "*" in CORS_ALLOW_ORIGIN:
-    log.warning(
-        "\n\nWARNING: CORS_ALLOW_ORIGIN IS SET TO '*' - NOT RECOMMENDED FOR PRODUCTION DEPLOYMENTS.\n"
-    )
-
 validate_cors_origins(CORS_ALLOW_ORIGIN)
 
 

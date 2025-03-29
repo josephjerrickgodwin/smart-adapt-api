@@ -37,11 +37,12 @@ from src.service.sockets import (
     get_active_status_by_user_id,
 )
 from src.service.storage_manager import storage_manager
+from src.service.utils.storage.storage_service import Storage
 from src.service.utils.code_interpreter_service import execute_code_jupyter
 from src.service.utils.config_service import (
     CACHE_DIR,
     DEFAULT_TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE,
-    DEFAULT_CODE_INTERPRETER_PROMPT, CODE_INTERPRETER_ENGINE,
+    DEFAULT_CODE_INTERPRETER_PROMPT, CODE_INTERPRETER_ENGINE, DEFAULT_RAG_TEMPLATE,
 )
 from src.service.utils.misc_service import (
     get_message_list,
@@ -413,10 +414,6 @@ def apply_params_to_form_data(form_data: dict):
 
 
 async def process_chat_payload(form_data: dict, metadata, user):
-    # Initialize the asynchronous event emitter and event caller
-    event_emitter = get_event_emitter(metadata)
-
-    # Initialize events to store additional events
     events, sources = [], []
 
     # Extract history from the form data
@@ -424,14 +421,13 @@ async def process_chat_payload(form_data: dict, metadata, user):
     user_message = get_last_user_message(history)
 
     # Rewrite the query excluding the first query
+    rewritten_query = user_message
     if len(history) > 1:
         rewritten_query = await model_service.rewrite_query(
             current_query=user_message,
             history=history
         )
         log.info(f'Rewritten query: {rewritten_query}')
-    else:
-        rewritten_query = user_message
 
     # Get the index file from the DB
     log.info("Started fetching the existing index")
@@ -440,41 +436,16 @@ async def process_chat_payload(form_data: dict, metadata, user):
     index_filename = f'{user.id}__index.pkl'
 
     # Check if an index is available for the user
-    index_exist = await storage_manager.check_data_exists(
-        user_id=user.id,
-        filename=index_filename
-    )
+    rag_service = Storage.get_file(index_filename)
 
-    if index_exist:
-        rag_service = await storage_manager.read(
-            user_id=user.id,
-            filename=index_filename
-        )
-
+    if rag_service:
         # Start search
         log.info(f"Started querying the vector store")
-        items = await rag_service.search(query=rewritten_query)
-        log.info(f'Received a total of {len(items)} context')
-
-        await event_emitter(
-            {
-                "type": "status",
-                "data": {"action": "knowledge_search", "query": user_message, "done": False},
-            }
-        )
+        sources = await rag_service.search(query=rewritten_query)
+        log.info(f'Received a total of {len(sources)} context')
 
     features = form_data.pop("features", {})
     if features:
-        # if "web_search" in features and features["web_search"]:
-        #     form_data = await chat_web_search_handler(
-        #         request, form_data, extra_params, user
-        #     )
-
-        # if "image_generation" in features and features["image_generation"]:
-        #     form_data = await chat_image_generation_handler(
-        #         request, form_data, extra_params, user
-        #     )
-
         if "code_interpreter" in features and features["code_interpreter"]:
             form_data["messages"] = add_or_update_user_message(
                 DEFAULT_CODE_INTERPRETER_PROMPT, form_data["messages"],
@@ -483,25 +454,29 @@ async def process_chat_payload(form_data: dict, metadata, user):
     if sources:
         context_string = ""
         for source_idx, source in enumerate(sources):
+            source = source['label']
+
             # Extract content between <header> and </header>
-            metadata = re.search(r'<header>(.*?)</header>', source)
-            metadata = metadata.group(1) if metadata else ''
+            header = re.search(r'<header>(.*?)</header>', source, re.DOTALL)
+            header = header.group(1) if header else ''
 
             # Extract content after </header>
             content = re.split(r'</header>', source, 1)[-1]
 
             # Add to context
             context_string += f"<source><source_id>{source_idx}</source_id>"
-            context_string += f"<source_metadata>{metadata}</source_metadata>"
-            context_string += f"<source_context>{content}</source_context></source>\n"
+            if header:
+                context_string += f"<source_metadata>{header}</source_metadata>"
+            context_string += f"<source_context>{content}</source_context></source>\n\n"
 
         context_string = context_string.strip()
+        formatted_content = rag_template(
+            template='',
+            context=context_string,
+            query=user_message
+        )
         history = add_or_update_system_message(
-            content=rag_template(
-                template=RAG_TEMPLATE,
-                context=context_string,
-                query=user_message
-            ),
+            content=formatted_content,
             messages=history,
         )
 
@@ -615,7 +590,6 @@ async def process_chat_response(
     def split_content_and_whitespace(content):
         content_stripped = content.rstrip()
         original_whitespace = content[len(content_stripped):] if len(content) > len(content_stripped) else ""
-
         return content_stripped, original_whitespace
 
     def is_opening_code_block(content):

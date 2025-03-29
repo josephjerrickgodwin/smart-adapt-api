@@ -44,10 +44,12 @@ class StorageProvider(ABC):
 
 class LocalStorageProvider(StorageProvider):
     @staticmethod
-    def upload_file(file: BinaryIO, filename: str) -> Tuple[bytes, str]:
+    def upload_file(file: BinaryIO | bytes, filename: str) -> Tuple[bytes, str]:
         # Load contents of the file based on the extension
         if filename.endswith(".pkl"):
             data = pkl.load(file)
+        elif isinstance(file, bytes):
+            data = file
         else:
             data = file.read()
 

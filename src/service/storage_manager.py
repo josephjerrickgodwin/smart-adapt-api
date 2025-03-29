@@ -12,28 +12,17 @@ class StorageManager:
     This class provides CRUD (Create, Read, Update, Delete) operations for pickle files,
     with each file identified by a user_id (sanitized to be filename-friendly).
     """
+    def __init__(self):
+        self.data_dir = os.path.join(os.getcwd(), "data")
 
-    def __init__(self, base_dir: str = 'data'):
-        """
-        Initialize the PickleStorageManager.
-
-        :param base_dir: Base directory for storing pickle files (default: 'data')
-        """
-        # Create the base directory if it doesn't exist
-        self.base_dir = os.path.join(os.getcwd(), base_dir)
-        os.makedirs(self.base_dir, exist_ok=True)
-
-    async def get_user_data_path(self, user_id: str):
-        return os.path.join(self.base_dir, user_id)
-
-    async def _get_user_dir(self, user_id: str) -> str:
+    async def get_user_dir(self, user_id: str) -> str:
         """
         Create and return the directory path for a specific user.
 
         :param user_id: Unique ID of the user
         :return: Path to the user's directory
         """
-        user_dir = os.path.join(self.base_dir, user_id)
+        user_dir = os.path.join(self.data_dir, user_id)
         os.makedirs(user_dir, exist_ok=True)
         return user_dir
 
@@ -48,7 +37,7 @@ class StorageManager:
         :raises FileExistsError: If file already exists
         """
         # Sanitize filename and get user directory
-        user_dir = await self._get_user_dir(user_id)
+        user_dir = await self.get_user_dir(user_id)
 
         # Construct full file path
         file_path = os.path.join(user_dir, f"{filename}.pkl")
@@ -73,7 +62,7 @@ class StorageManager:
         :raises FileNotFoundError: If file does not exist
         """
         # Sanitize filename and get user directory
-        user_dir = await self._get_user_dir(user_id)
+        user_dir = await self.get_user_dir(user_id)
 
         # Construct full file path
         file_path = os.path.join(user_dir, f"{filename}.pkl")
@@ -93,7 +82,7 @@ class StorageManager:
         :raises FileNotFoundError: If file does not exist
         """
         # Sanitize filename and get user directory
-        user_dir = await self._get_user_dir(user_id)
+        user_dir = await self.get_user_dir(user_id)
 
         # Construct full file path
         file_path = os.path.join(user_dir, f"{filename}.pkl")
@@ -117,7 +106,7 @@ class StorageManager:
         :return: True if file was deleted, False if file did not exist
         """
         # Sanitize filename and get user directory
-        user_dir = await self._get_user_dir(user_id)
+        user_dir = await self.get_user_dir(user_id)
 
         # Construct full file path
         file_path = os.path.join(user_dir, f"{filename}.pkl")
@@ -135,7 +124,7 @@ class StorageManager:
         :return: True if file exists, False if it doesn't exist
         """
         # Define the full file path
-        file_path = os.path.join(self.base_dir, user_id, filename)
+        file_path = os.path.join(self.base_dir, filename)
 
         return os.path.exists(file_path)
 
@@ -147,7 +136,7 @@ class StorageManager:
         :return: List of pickle filenames
         """
         # Get user directory
-        user_dir = await self._get_user_dir(user_id)
+        user_dir = await self.get_user_dir(user_id)
 
         # List all .pkl files in the user's directory
         return [f for f in os.listdir(user_dir) if f.endswith('.pkl')]

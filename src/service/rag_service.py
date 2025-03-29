@@ -1,27 +1,14 @@
 import logging
-import os
+from typing import List
 
 import numpy as np
-import torch
-
-from typing import List
-from sentence_transformers import SentenceTransformer
 
 from src.model.status_enum import Status
+from src.service.embedding_service import embedding_service
 from src.service.index_store import IndexStore
 from src.service.index_tools import index_tools
 
-from dotenv import load_dotenv
-
-load_dotenv()
-
 logger = logging.getLogger(__name__)
-
-# Load the Sentence Transformer Model
-SENTENCE_MODEL_ID = str(os.getenv('SENTENCE_MODEL_ID'))
-
-# Load the sentence model
-MODEL = SentenceTransformer(SENTENCE_MODEL_ID, trust_remote_code=True)
 
 
 class RAGService:
@@ -29,7 +16,6 @@ class RAGService:
         # Initialize an empty vector store.
         # Because it wasn't certain of the optimal parameters
         self.index_store = None
-        self.batch_size = 16
 
         # Initialize a list of HNSW Hyperparameters
         self.m_values = [value for value in range(4, 64, 8)]
@@ -44,36 +30,6 @@ class RAGService:
 
         self.optimization_results = None
 
-    async def get_embeddings(self, sentences: List[str]):
-        """
-        Asynchronously computes embeddings for a list of sentences using a batch-wise approach.
-
-        Args:
-            sentences (List[str]): A list of input sentences for which embeddings are to be computed.
-
-        Returns:
-            np.ndarray: A NumPy array of shape (num_sentences, embedding_dim) containing the computed embeddings.
-
-        Notes:
-            - Uses `torch.no_grad()` to disable gradient calculations for efficiency.
-            - Processes sentences in batches to optimize memory usage.
-        """
-        embeddings = []  # List to store computed embeddings
-
-        with torch.no_grad():  # Disable gradient computation for efficiency
-            for i in range(0, len(sentences), self.batch_size):
-                # Extract the current batch of sentences
-                batch = sentences[i:i + self.batch_size]
-
-                # Compute embeddings for the batch
-                batch_embeddings = MODEL.encode(batch, show_progress_bar=False)
-
-                # Append batch embeddings to the final list
-                embeddings.extend(batch_embeddings)
-
-        # Convert the list of embeddings to a NumPy array with dtype float32
-        return np.asarray(embeddings, dtype=np.float32)
-
     async def get_all_hyperparameters(self):
         assert self.optimization_results is not None, "Hyperparameters have not been initialized yet!"
         return [
@@ -83,7 +39,8 @@ class RAGService:
                 "Query Time (s)": f"{result['query_time']:.10f}",
                 "Recall": f"{result['recall']:.2%}",
                 "ef_construction": f"{result['ef_construction']}",
-                "ef_search": f"{result['ef_search']}"
+                "ef_search": f"{result['ef_search']}",
+                "Memory Usage": f"{result['memory_usage']:.6f}"
             }
             for idx, result in enumerate(self.optimization_results, start=1)
         ]
@@ -100,7 +57,7 @@ class RAGService:
 
     async def configure_vector_store(self, session_id: str, embeddings: np.ndarray, docs: List[str]):
         # Select the optimal hyperparameters
-        results, optimal_result = await index_tools.get_optimal_hyperparameters(
+        results, optimal_result = index_tools.get_optimal_hyperparameters(
             vectors=embeddings,
             ef_construction_values=self.ef_construction_values,
             ef_search_values=self.ef_search_values,
@@ -139,7 +96,7 @@ class RAGService:
     async def search(
             self,
             query: str | np.ndarray,
-            k: int = 0,
+            k: int = 10,
             return_embeddings: bool = False
     ):
         assert self.index_store is not None, "RAG initialization required!"
@@ -147,7 +104,7 @@ class RAGService:
         # Generate the query embeddings
         if isinstance(query, str):
             logger.info('Generating the query embedding')
-            query = await self.get_embeddings([query])
+            query = await embedding_service.get_embeddings([query])
 
         # Search the Vector Store
         logger.info('Querying the vector store')

@@ -20,8 +20,6 @@ from src.controller.chat_ui.utils_controller import router as utils_router
 # Misc routers
 from src.controller.dataset_controller import router as dataset_router
 from src.controller.health_controller import router as health_router
-from src.controller.index_controller import router as index_router
-from src.controller.inference_controller import router as inference_router
 from src.controller.rag_controller import router as rag_router
 
 routers = [
@@ -44,7 +42,5 @@ routers = [
     user_router,
     utils_router,
     dataset_router,
-    index_router,
-    inference_router,
     rag_router
 ]

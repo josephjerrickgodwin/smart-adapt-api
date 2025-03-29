@@ -33,21 +33,6 @@ class Knowledge(Base):
     meta = Column(JSON, nullable=True)
 
     access_control = Column(JSON, nullable=True)  # Controls data access levels.
-    # Defines access control rules for this entry.
-    # - `None`: Public access, available to all users with the "user" role.
-    # - `{}`: Private access, restricted exclusively to the owner.
-    # - Custom permissions: Specific access control for reading and writing;
-    #   Can specify group or user-level restrictions:
-    #   {
-    #      "read": {
-    #          "group_ids": ["group_id1", "group_id2"],
-    #          "user_ids":  ["user_id1", "user_id2"]
-    #      },
-    #      "write": {
-    #          "group_ids": ["group_id1", "group_id2"],
-    #          "user_ids":  ["user_id1", "user_id2"]
-    #      }
-    #   }
 
     created_at = Column(BigInteger)
     updated_at = Column(BigInteger)
@@ -96,8 +81,11 @@ class KnowledgeForm(BaseModel):
 
 
 class KnowledgeTable:
+    @classmethod
     def insert_new_knowledge(
-        self, user_id: str, form_data: KnowledgeForm
+            cls,
+            user_id: str,
+            form_data: KnowledgeForm
     ) -> Optional[KnowledgeModel]:
         with get_db() as db:
             knowledge = KnowledgeModel(
@@ -115,14 +103,12 @@ class KnowledgeTable:
                 db.add(result)
                 db.commit()
                 db.refresh(result)
-                if result:
-                    return KnowledgeModel.model_validate(result)
-                else:
-                    return None
+                return KnowledgeModel.model_validate(result) if result else None
             except Exception:
                 return None
 
-    def get_knowledge_bases(self) -> list[KnowledgeUserModel]:
+    @classmethod
+    def get_knowledge_bases(cls) -> list[KnowledgeUserModel]:
         with get_db() as db:
             knowledge_bases = []
             for knowledge in (
@@ -140,7 +126,9 @@ class KnowledgeTable:
             return knowledge_bases
 
     def get_knowledge_bases_by_user_id(
-        self, user_id: str, permission: str = "write"
+            self,
+            user_id: str,
+            permission: str = "write"
     ) -> list[KnowledgeUserModel]:
         knowledge_bases = self.get_knowledge_bases()
         return [
@@ -150,7 +138,8 @@ class KnowledgeTable:
             or has_access(user_id, permission, knowledge_base.access_control)
         ]
 
-    def get_knowledge_by_id(self, id: str) -> Optional[KnowledgeModel]:
+    @classmethod
+    def get_knowledge_by_id(cls, id: str) -> Optional[KnowledgeModel]:
         try:
             with get_db() as db:
                 knowledge = db.query(Knowledge).filter_by(id=id).first()
@@ -159,11 +148,12 @@ class KnowledgeTable:
             return None
 
     def update_knowledge_by_id(
-        self, id: str, form_data: KnowledgeForm, overwrite: bool = False
+            self,
+            id: str,
+            form_data: KnowledgeForm
     ) -> Optional[KnowledgeModel]:
         try:
             with get_db() as db:
-                knowledge = self.get_knowledge_by_id(id=id)
                 db.query(Knowledge).filter_by(id=id).update(
                     {
                         **form_data.model_dump(),
@@ -177,11 +167,12 @@ class KnowledgeTable:
             return None
 
     def update_knowledge_data_by_id(
-        self, id: str, data: dict
+            self,
+            id: str,
+            data: dict
     ) -> Optional[KnowledgeModel]:
         try:
             with get_db() as db:
-                knowledge = self.get_knowledge_by_id(id=id)
                 db.query(Knowledge).filter_by(id=id).update(
                     {
                         "data": data,
@@ -194,7 +185,8 @@ class KnowledgeTable:
             log.exception(e)
             return None
 
-    def delete_knowledge_by_id(self, id: str) -> bool:
+    @classmethod
+    def delete_knowledge_by_id(cls, id: str) -> bool:
         try:
             with get_db() as db:
                 db.query(Knowledge).filter_by(id=id).delete()
@@ -203,7 +195,8 @@ class KnowledgeTable:
         except Exception:
             return False
 
-    def delete_all_knowledge(self) -> bool:
+    @classmethod
+    def delete_all_knowledge(cls) -> bool:
         with get_db() as db:
             try:
                 db.query(Knowledge).delete()

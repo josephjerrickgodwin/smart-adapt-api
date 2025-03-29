@@ -3,33 +3,35 @@ import gc
 import logging
 import os
 import re
-import torch
-
 from threading import Thread
-from typing import List
-from dotenv import load_dotenv
+from typing import Any
 
+import ftfy
+import pandas as pd
+import torch
 from datasets import Dataset
+from dotenv import load_dotenv
 from peft import (
     PeftModel,
     PeftConfig,
     LoraConfig,
     get_peft_model,
 )
+from sklearn.model_selection import train_test_split
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
-    TrainingArguments,
     AsyncTextIteratorStreamer
 )
-from trl import SFTTrainer
+from trl import SFTTrainer, SFTConfig
 
 from src.exception.fine_tuning_disabled_error import FineTuningDisabledError
 from src.exception.inference_disabled_error import InferenceDisabledError
+from src.model.knowledge import Knowledges
 from src.service import prompt_service
 from src.service.TextStreamer import SmartAdaptTextStreamer
-from src.service.storage_manager import storage_manager
 from src.service.inference_model_service import inference_model_service
+from src.service.storage_manager import storage_manager
 
 load_dotenv()
 
@@ -60,6 +62,7 @@ class ModelService:
         self.current_user = None
         self.lora_loaded = False
         self.inference_enabled = True
+        self.loaded_lora_ids = []
 
         # Load weights
         # self._load_weights()
@@ -86,6 +89,44 @@ class ModelService:
 
         # Reset the inference status
         self.inference_enabled = True
+        self.loaded_lora_ids = []
+
+    @classmethod
+    def calculate_lora_hyperparameters(cls, dataset_size: int):
+        """
+        Calculate optimal LoRA hyperparameters: rank (r) and scaling factor (lora_alpha).
+
+        Parameters:
+        - dataset_size (int): Number of samples in the dataset.
+
+        Returns:
+        - dict: A dictionary containing the optimal values for 'r' and 'lora_alpha'.
+
+        Raises:
+        - ValueError: If input parameters are invalid.
+        """
+        # Input validation
+        if not dataset_size:
+            raise ValueError("Model size and dataset size must be positive")
+
+        # Calculate r and alpha based on the dataset size
+        if dataset_size <= 1000:
+            r = 8
+            lora_alpha = 16
+        elif dataset_size <= 100000:
+            r = 32
+            lora_alpha = 64
+        else:
+            r = 64
+            lora_alpha = 128
+
+        return {'r': r, 'lora_alpha': lora_alpha}
+
+    def get_lora_path(self, data_path: str, knowledge_id: str):
+        return os.path.join(data_path, knowledge_id, self.data_model_name)
+
+    def get_logs_path(self, data_path: str, knowledge_id: str):
+        return os.path.join(data_path, knowledge_id, self.logs_dir)
 
     @classmethod
     def _extract_new_query(cls, text: str):
@@ -107,17 +148,26 @@ class ModelService:
         # Return the captured group or the original text if no match
         return match.group(1) if match else text
 
-    async def _load_adapter(self, user_id: str, merge_and_unload: bool = False):
+    async def _load_adapter(
+            self,
+            user_id: str,
+            knowledge_ids=None,
+            merge_and_unload: bool = False
+    ):
         """
         Get the inference pipeline for the model.
 
         Args:
             user_id (str): Unique ID of the user
+            knowledge_ids (List[str], optional): List of knowledge ids
+            merge_and_unload (bool, optional): Whether to merge the model and unload the LoRA adapters
 
         Returns:
             text-generation pipeline
         """
         # Check for the current user
+        if knowledge_ids is None:
+            knowledge_ids = []
         if not self.current_user:
             self.current_user = user_id
 
@@ -133,33 +183,34 @@ class ModelService:
                 self.model.delete_adapter(self.current_user)
                 self.lora_loaded = False
 
-        # Check for LoRA adapters for the current user in the local storage
-        lora_adapter_folder_name = f'{user_id}_lora_adapter'
-        lora_exist = await storage_manager.check_data_exists(
-            user_id=user_id,
-            filename=lora_adapter_folder_name
-        )
-        logger.info(f"{'Found LoRA adapters and loading to the model' if lora_exist else 'Found no LoRA adapters'}")
+        # Retrieve the user data path
+        data_path = await storage_manager.get_user_dir(user_id)
 
-        # Load the model with LoRA, if the weights are available
-        if lora_exist:
-            user_data_weights = await storage_manager.read(
-                user_id=user_id,
-                filename=lora_adapter_folder_name
+        # Load and merge multiple LoRA adapters
+        for knowledge_id in knowledge_ids:
+            if knowledge_id in self.loaded_lora_ids:
+                continue
+
+            lora_path = self.get_lora_path(
+                data_path=data_path,
+                knowledge_id=knowledge_id
             )
-            peft_config = PeftConfig.from_pretrained(user_data_weights)
+            if not len(os.listdir(lora_path)):
+                continue
+
+            # Load the LoRA adapter
+            peft_config = PeftConfig.from_pretrained(lora_path)
             self.model = PeftModel.from_pretrained(
                 self.model,
                 peft_config,
                 adapter_name=user_id
             ).to(self.device)
 
-            # Merge the adapter permanently
-            if merge_and_unload:
-                self.model = self.model.merge_and_unload()
-
             self.lora_loaded = True
-            logger.info('Successfully loaded LoRA adapters')
+
+        # Merge the adapter permanently
+        if self.lora_loaded and merge_and_unload:
+            self.model = self.model.merge_and_unload()
 
         # Assign the current user
         self.current_user = user_id
@@ -170,6 +221,7 @@ class ModelService:
             history: list
     ):
         logger.info('Started extracting user messages from the history...')
+
         # Extract previous queries
         previous_queries_list = [
             f"- '{conversation.get('content', '')}'"
@@ -232,8 +284,9 @@ class ModelService:
         # Start streaming the reasoning
         text = ''
         async for chunk in streamer:
-            if chunk:
-                text += chunk
+            if not chunk:
+                continue
+            text += chunk
 
         # Extract the new query
         new_query = self._extract_new_query(text)
@@ -360,6 +413,7 @@ class ModelService:
             user_id: str,
             messages: list,
             stream: bool,
+            knowledge_ids: list,
             **params,
     ):
         words = [
@@ -378,6 +432,7 @@ class ModelService:
             user_id: str,
             messages: list,
             stream: bool,
+            knowledge_ids: list,
             **params,
     ):
         if not self.inference_enabled:
@@ -408,7 +463,7 @@ class ModelService:
         logger.info('Preparing the additional kwargs for inference')
 
         # Define the generation kwargs
-        thinker_kwargs = dict(
+        kwargs = dict(
             input_ids=tokens.input_ids,
             attention_mask=tokens.attention_mask,
             pad_token_id=self.tokenizer.eos_token_id,
@@ -419,7 +474,7 @@ class ModelService:
         logger.info('Started the response generation')
 
         # Define the thread
-        thread = Thread(target=self.model.generate, kwargs=thinker_kwargs)
+        thread = Thread(target=self.model.generate, kwargs=kwargs)
 
         # Start the thread
         thread.start()
@@ -455,9 +510,105 @@ class ModelService:
             device_map=self.device
         )
 
+    async def fine_tuning_handler(
+            self,
+            df: pd.DataFrame,
+            user_id: str,
+            knowledge_id: str,
+            question_column_name: str,
+            answer_column_name: str,
+            file_data: dict
+    ):
+        # Pre-process the data
+        documents = []
+        for index, row in df.iterrows():
+            question = row[question_column_name]
+            answer = row[answer_column_name]
+
+            # Skip any empty rows
+            if not question or not answer:
+                continue
+
+            # Fix any inconsistencies
+            question = ftfy.fix_text(question)
+            answer = ftfy.fix_text(answer)
+
+            # Formulate the history
+            history = [
+                {
+                    "role": "user",
+                    "content": question
+                },
+                {
+                    "role": "assistant",
+                    "content": answer
+                }
+            ]
+
+            # Apply the chat template
+            formatted_history = self.tokenizer.apply_chat_template(history, tokenize=False)
+
+            # Tokenize the text
+            tokenized_data = self.tokenizer(
+                formatted_history,
+                padding="max_length",
+                truncation=True,
+                max_length=512
+            )
+
+            # Create labels (shifted input IDs for causal language modeling)
+            tokenized_data["labels"] = tokenized_data["input_ids"].copy()
+
+            # Ignore padding tokens for loss calculation
+            tokenized_data["labels"][tokenized_data["labels"] == self.tokenizer.pad_token_id] = -100
+            documents.append(tokenized_data)
+
+        # Remove the previous dataframe
+        del df
+        gc.collect()
+
+        # Check for documents are present
+        if not documents:
+            # Update the knowledge
+            file_data['status'] = 'Failed'
+            _ = Knowledges.update_knowledge_data_by_id(
+                id=knowledge_id,
+                data=file_data
+            )
+            return
+
+        # Convert to DataFrame
+        df = pd.DataFrame(documents)
+
+        # Split for train, eval
+        train_df, eval_df = train_test_split(df, test_size=0.2, random_state=42)
+
+        # Convert to dataset supportable format
+        train_df = Dataset.from_pandas(train_df)
+        eval_df = Dataset.from_pandas(eval_df)
+
+        # Calculate LoRA Hyperparameters
+        hyperparameters = self.calculate_lora_hyperparameters(len(df))
+
+        # Start training the model
+        await self.fine_tune(
+            user_id=user_id,
+            train_df=train_df,
+            eval_df=eval_df,
+            knowledge_id=knowledge_id,
+            r=hyperparameters['r'],
+            lora_alpha=hyperparameters['lora_alpha']
+        )
+
+        # Update the knowledge
+        file_data['status'] = 'Completed'
+        _ = Knowledges.update_knowledge_data_by_id(
+            id=knowledge_id,
+            data=file_data
+        )
+
     async def prepare_model(
             self,
-            user_id: str,
             r: int,
             lora_alpha: int
     ):
@@ -465,25 +616,22 @@ class ModelService:
             Prepare the base model for fine-tuning.
 
             Args:
-                user_id (str): Unique ID of the user
                 r (int): LoRA rank
                 lora_alpha (int): LoRA scaling factor
 
             Returns:
                 Tuple of prepared model and tokenizer
         """
-        # Load adapters of the current user
-        await self._load_adapter(user_id)
-
-        # LoRA configuration
         peft_config = LoraConfig(
             r=r,
             lora_alpha=lora_alpha,
-            use_dora=True,
             lora_dropout=0.05,
             bias="none",
             task_type="CAUSAL_LM",
-            target_modules=['q_proj', 'k_proj']
+            target_modules=[
+                'q_proj', 'k_proj', 'v_proj',
+                'o_proj', 'gate_proj', 'up_proj', 'down_proj'
+            ]
         )
 
         # Apply LoRA to the model
@@ -492,15 +640,23 @@ class ModelService:
     async def fine_tune(
             self,
             user_id: str,
-            dataset: List[str],
+            train_df: Any,
+            eval_df: Any,
             r: int,
             lora_alpha: int,
-            num_epochs: int = 10,
-            max_seq_len: int = 256,
+            knowledge_id: str,
+            fp16: bool = True,
+            bf16: bool = False,
+            num_epochs: int = 3,
+            eval_steps: int = 0.2,
+            logging_steps: int = 10,
+            warmup_steps: int = 500,
+            max_seq_len: int = 512,
+            group_by_length: bool = False,
             learning_rate: float = 2e-4,
-            per_device_train_batch_size=1,
-            per_device_eval_batch_size=1,
-            gradient_accumulation_steps=2,
+            per_device_train_batch_size=2,
+            per_device_eval_batch_size=2,
+            gradient_accumulation_steps=1,
             report_to: str = 'none'
     ):
         """
@@ -508,11 +664,19 @@ class ModelService:
 
         Args:
             user_id (str): Unique ID of the user
-            dataset (List[str]): Preprocessed text chunks
+            train_df (Any): Training dataset
+            eval_df (Any): Evaluation dataset
             r (int): LoRA rank
             lora_alpha (int): LoRA scaling factor
+            knowledge_id (str): Unique ID of the knowledge request
+            fp16 (bool): Whether to use float16
+            bf16 (bool): Whether to use bfloat16
             num_epochs (int): Number of training epochs
             max_seq_len (int): Maximum sequence length from the dataset
+            group_by_length (int): Whether to group the dataset by the length of the longest sequence
+            eval_steps (int): Number of evaluation steps
+            logging_steps (int): Number of logging steps
+            warmup_steps (int): Number of warmup steps
             learning_rate (float): Learning rate for training
             per_device_train_batch_size (int): Training batch size per device
             per_device_eval_batch_size (int): Evaluation batch size per device
@@ -532,25 +696,26 @@ class ModelService:
         self.flush()
 
         # Prepare the data storage
-        data_path = await storage_manager.get_user_data_path(user_id)
+        data_path = await storage_manager.get_user_dir(user_id)
 
         # Define the adapter and logs path
-        adapter_path = os.path.join(data_path, self.data_model_name)
-        logs_dir_path = os.path.join(data_path, self.logs_dir)
-
-        # Prepare the dataset
-        hf_dataset = Dataset.from_list([{'text': text} for text in dataset])
+        adapter_path = self.get_lora_path(
+            data_path=data_path,
+            knowledge_id=knowledge_id
+        )
+        logs_dir_path = self.get_logs_path(
+            data_path=data_path,
+            knowledge_id=knowledge_id
+        )
 
         # Prepare model and tokenizer
-        yield "Preparing model and tokenizer..."
         await self.prepare_model(
-            user_id=user_id,
             r=r,
             lora_alpha=lora_alpha
         )
 
         # Training arguments
-        training_arguments = TrainingArguments(
+        training_arguments = SFTConfig(
             output_dir=logs_dir_path,
             per_device_train_batch_size=per_device_train_batch_size,
             per_device_eval_batch_size=per_device_eval_batch_size,
@@ -558,45 +723,37 @@ class ModelService:
             optim="paged_adamw_32bit",
             num_train_epochs=num_epochs,
             eval_strategy="steps",
-            eval_steps=0.2,
-            logging_steps=1,
-            warmup_steps=10,
+            eval_steps=eval_steps,
+            logging_steps=logging_steps,
+            warmup_steps=warmup_steps,
             logging_strategy="steps",
             learning_rate=learning_rate,
-            fp16=False,
-            bf16=False,
-            group_by_length=True,
+            fp16=fp16,
+            bf16=bf16,
+            group_by_length=group_by_length,
+            max_seq_length=max_seq_len,
             report_to=report_to
         )
 
         # Initialize trainer
-        yield "Initializing trainer..."
         trainer = SFTTrainer(
             model=self.model,
-            train_dataset=hf_dataset,
-            eval_dataset=hf_dataset,
+            train_dataset=train_df,
+            eval_dataset=eval_df,
             peft_config=None,  # Already applied
-            max_seq_length=max_seq_len,
-            dataset_text_field="text",
             tokenizer=self.tokenizer,
             args=training_arguments,
-            packing=False,
         )
 
         # Perform training
-        yield "Starting fine-tuning process..."
         trainer.train()
 
         # Save model
-        yield "Saving fine-tuned model..."
-
         os.makedirs(adapter_path, exist_ok=True)
         trainer.model.save_pretrained(adapter_path)
 
         # Reset the memory and weights
         self.flush()
-
-        yield "Fine-tuning complete successfully!"
 
 
 model_service = ModelService()

@@ -123,10 +123,18 @@ async def generate_function_chat_completion(
 
     async def stream_content():
         try:
+            # Define the knowledge sources
+            files = metadata.get('files', [])
+            knowledge_sources = [
+                file_info.get('id')
+                for file_info in files
+                if file_info.get('data', {}).get('status', '') == 'Completed'
+            ]
             async for chunk in model_service.test_completions(
                     user_id=user.id,
                     messages=form_data['messages'],
                     stream=stream,
+                    knowledge_ids=knowledge_sources,
                     **params
             ):
                 if isinstance(chunk, str):

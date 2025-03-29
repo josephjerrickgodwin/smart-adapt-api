@@ -134,18 +134,18 @@ async def generate_chat_completion(
         request: Request,
         form_data: dict,
         user: Any,
-        bypass_filter: bool = False,
+        bypass_filter: bool = True,
         stream: bool = True
 ):
-    if BYPASS_MODEL_ACCESS_CONTROL:
-        bypass_filter = True
+    # if BYPASS_MODEL_ACCESS_CONTROL:
+    #     bypass_filter = True
 
     model_id = form_data["model"]
     model = await get_model_by_id(id=model_id, user=user)
 
-    # Check if user has access to the model
-    if not bypass_filter and user.role == "user":
-        check_model_access(user, model)
+    # # Check if user has access to the model
+    # if not bypass_filter and user.role == "user":
+    #     check_model_access(user, model)
 
     return await generate_function_chat_completion(
         form_data=form_data,

@@ -1,7 +1,7 @@
 import unittest
 from fastapi.testclient import TestClient
 from unittest.mock import patch
-from main_old import app
+from main import app
 
 
 class TestRAGController(unittest.TestCase):
