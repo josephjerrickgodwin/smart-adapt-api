@@ -408,25 +408,6 @@ class ModelService:
 
         logger.info('Request have been served successfully')
 
-    async def test_completions(
-            self,
-            user_id: str,
-            messages: list,
-            stream: bool,
-            knowledge_ids: list,
-            **params,
-    ):
-        words = [
-            'h', 'e', 'l', 'l', 'o', ', ',
-            'H', 'o', 'w', ' c', 'a', 'n', ' I ', 'h', 'e', 'l', 'p ',
-            'y', 'o', 'u', '?']
-        if stream:
-            for word in words:
-                await asyncio.sleep(0.1)
-                yield word
-        else:
-            yield ''.join(words)
-
     async def start_completions(
             self,
             user_id: str,
@@ -439,7 +420,7 @@ class ModelService:
             raise InferenceDisabledError("The model is being trained. Please try again later!")
 
         # Load user adapter
-        await self._load_adapter(user_id)
+        await self._load_adapter(user_id, knowledge_ids)
 
         # Define the streamer
         logger.info('Initializing the tokenizer properties')

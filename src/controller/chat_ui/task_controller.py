@@ -6,7 +6,10 @@ from fastapi import APIRouter, Depends, HTTPException, status, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from src.controller.chat_ui.model_controller import get_model_by_id
+from src.model.constants import TASKS
+from src.service.chat_service import generate_chat_completion
+from src.service.env import SRC_LOG_LEVELS
+from src.service.utils.auth_service import get_admin_user, get_verified_user
 from src.service.utils.config_service import (
     DEFAULT_TITLE_GENERATION_PROMPT_TEMPLATE,
     DEFAULT_TAGS_GENERATION_PROMPT_TEMPLATE,
@@ -16,10 +19,6 @@ from src.service.utils.config_service import (
     DEFAULT_EMOJI_GENERATION_PROMPT_TEMPLATE,
     DEFAULT_MOA_GENERATION_PROMPT_TEMPLATE, ENABLE_TITLE_GENERATION,
 )
-from src.model.constants import TASKS
-from src.service.chat_service import generate_chat_completion
-from src.service.env import SRC_LOG_LEVELS
-from src.service.utils.auth_service import get_admin_user, get_verified_user
 from src.service.utils.task_service import get_task_model_id
 from src.service.utils.task_service import (
     title_generation_template,
@@ -311,7 +310,6 @@ async def generate_image_prompt(
 async def generate_queries(
     request: Request, form_data: dict, user=Depends(get_verified_user)
 ):
-
     type = form_data.get("type")
     if type == "web_search":
         if not request.app.state.config.ENABLE_SEARCH_QUERY_GENERATION:
@@ -433,8 +431,6 @@ async def generate_autocompletion(
             "chat_id": form_data.get("chat_id", None),
         },
     }
-
-    raise Exception('Success!')
 
     try:
         return await generate_chat_completion(request, form_data=payload, user=user)

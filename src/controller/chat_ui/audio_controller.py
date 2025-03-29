@@ -59,7 +59,6 @@ from pydub.utils import mediainfo
 def is_mp4_audio(file_path):
     """Check if the given file is an MP4 audio file."""
     if not os.path.isfile(file_path):
-        print(f"File not found: {file_path}")
         return False
 
     info = mediainfo(file_path)
@@ -76,7 +75,6 @@ def convert_mp4_to_wav(file_path, output_path):
     """Convert MP4 audio file to WAV format."""
     audio = AudioSegment.from_file(file_path, format="mp4")
     audio.export(output_path, format="wav")
-    print(f"Converted {file_path} to {output_path}")
 
 
 def set_faster_whisper_model(model: str, auto_update: bool = False):
@@ -254,7 +252,6 @@ async def speech(request: Request, user=Depends(get_verified_user)):
         payload["model"] = request.app.state.config.TTS_MODEL
 
         try:
-            # print(payload)
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     url=f"{request.app.state.config.TTS_OPENAI_API_BASE_URL}/audio/speech",
@@ -588,9 +585,8 @@ def compress_audio(file_path):
         audio.export(compressed_path, format="opus", bitrate="32k")
         log.debug(f"Compressed audio to {compressed_path}")
 
-        if (
-            os.path.getsize(compressed_path) > MAX_FILE_SIZE
-        ):  # Still larger than MAX_FILE_SIZE after compression
+        if os.path.getsize(compressed_path) > MAX_FILE_SIZE:
+
             raise Exception(ERROR_MESSAGES.FILE_TOO_LARGE(size=f"{MAX_FILE_SIZE_MB}MB"))
         return compressed_path
     else:
@@ -730,16 +726,7 @@ def get_available_voices(request) -> dict:
 
 @lru_cache
 def get_elevenlabs_voices(api_key: str) -> dict:
-    """
-    Note, set the following in your .env file to use Elevenlabs:
-    AUDIO_TTS_ENGINE=elevenlabs
-    AUDIO_TTS_API_KEY=sk_...  # Your Elevenlabs API key
-    AUDIO_TTS_VOICE=EXAVITQu4vr4xnSDxMaL  # From https://api.elevenlabs.io/v1/voices
-    AUDIO_TTS_MODEL=eleven_multilingual_v2
-    """
-
     try:
-        # TODO: Add retries
         response = requests.get(
             "https://api.elevenlabs.io/v1/voices",
             headers={

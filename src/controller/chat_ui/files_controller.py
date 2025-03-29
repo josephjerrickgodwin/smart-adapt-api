@@ -53,11 +53,6 @@ async def upload_file(
         un_sanitized_filename = file.filename
         filename = os.path.basename(un_sanitized_filename)
 
-        raise HTTPException(
-            status_code=status.HTTP_304_NOT_MODIFIED,
-            detail=f"Session ID: {session_id}",
-        )
-
         # replace filename with uuid
         id = str(uuid.uuid4())
         data_filename = f"{user.id}__index.pkl"

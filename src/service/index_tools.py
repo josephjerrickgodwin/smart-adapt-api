@@ -143,7 +143,9 @@ class IndexTools:
 
         :return: A list of results of the experiment long with the optimal hyperparameters
         """
-        assert vectors.ndim > num_queries, f"Number of queries: {num_queries} must be greater than number of vectors!"
+        assert len(vectors) >= 2, "vectors must have at least two documents"
+
+        num_queries = min(num_queries, len(vectors) - 1)
 
         # Generate the query vector randomly from the document vectors
         query_vector_positions = np.random.choice(vectors.shape[0], num_queries, replace=False)

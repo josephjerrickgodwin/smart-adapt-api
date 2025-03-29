@@ -130,7 +130,7 @@ async def generate_function_chat_completion(
                 for file_info in files
                 if file_info.get('data', {}).get('status', '') == 'Completed'
             ]
-            async for chunk in model_service.test_completions(
+            async for chunk in model_service.start_completions(
                     user_id=user.id,
                     messages=form_data['messages'],
                     stream=stream,

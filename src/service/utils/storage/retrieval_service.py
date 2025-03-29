@@ -30,7 +30,6 @@ from src.service.utils.storage.db_connector import VECTOR_DB_CLIENT
 
 # Document loaders
 from src.service.utils.storage.document_loader import Loader
-from src.service.utils.youtube_service import YoutubeLoader
 
 from src.service.utils.storage.util_service import (
     get_embedding_function,
@@ -984,50 +983,6 @@ def process_text(
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=ERROR_MESSAGES.DEFAULT(),
-        )
-
-
-@router.post("/process/youtube")
-def process_youtube_video(
-    request: Request, form_data: ProcessUrlForm, user=Depends(get_verified_user)
-):
-    try:
-        collection_name = form_data.collection_name
-        if not collection_name:
-            collection_name = calculate_sha256_string(form_data.url)[:63]
-
-        loader = YoutubeLoader(
-            form_data.url,
-            language=request.app.state.config.YOUTUBE_LOADER_LANGUAGE,
-            proxy_url=request.app.state.config.YOUTUBE_LOADER_PROXY_URL,
-        )
-
-        docs = loader.load()
-        content = " ".join([doc.page_content for doc in docs])
-        log.debug(f"text_content: {content}")
-
-        save_docs_to_vector_db(
-            request, docs, collection_name, overwrite=True, user=user
-        )
-
-        return {
-            "status": True,
-            "collection_name": collection_name,
-            "filename": form_data.url,
-            "file": {
-                "data": {
-                    "content": content,
-                },
-                "meta": {
-                    "name": form_data.url,
-                },
-            },
-        }
-    except Exception as e:
-        log.exception(e)
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=ERROR_MESSAGES.DEFAULT(e),
         )
 
 
