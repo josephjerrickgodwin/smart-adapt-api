@@ -2,7 +2,6 @@ import json
 import logging
 
 import requests
-# from src.service.utils.config_service import WEBUI_FAVICON_URL
 from src.service.env import SRC_LOG_LEVELS, VERSION
 
 log = logging.getLogger(__name__)

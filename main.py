@@ -1,8 +1,6 @@
 import asyncio
 import json
 import logging
-import mimetypes
-import os
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -16,10 +14,8 @@ from fastapi import (
     HTTPException,
     Request,
     status,
-    applications,
 )
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -51,14 +47,12 @@ from src.service.env import (
     WEBUI_AUTH_TRUSTED_EMAIL_HEADER,
     WEBUI_AUTH_TRUSTED_NAME_HEADER,
     ENABLE_WEBSOCKET_SUPPORT,
-    BYPASS_MODEL_ACCESS_CONTROL,
     RESET_CONFIG_ON_START,
     OFFLINE_MODE,
 )
 from src.service.function_service import get_function_models
 from src.service.oauth_service import OAuthManager
 from src.service.sockets import (app as socket_app, periodic_usage_pool_cleanup)
-from src.service.utils.access_control_service import has_access
 from src.service.utils.auth_service import (
     get_license_data,
     decode_token,
@@ -128,9 +122,7 @@ from src.service.utils.config_service import (
     # Retrieval
     RAG_TEMPLATE,
     RAG_EMBEDDING_MODEL,
-    RAG_EMBEDDING_MODEL_AUTO_UPDATE,
     RAG_RERANKING_MODEL,
-    RAG_RERANKING_MODEL_AUTO_UPDATE,
     RAG_EMBEDDING_ENGINE,
     RAG_EMBEDDING_BATCH_SIZE,
     RAG_RELEVANCE_THRESHOLD,
@@ -230,10 +222,6 @@ from src.service.utils.config_service import (
     LDAP_CIPHERS,
     # Misc
     ENV,
-    CACHE_DIR,
-    STATIC_DIR,
-    FRONTEND_BUILD_DIR,
-    CORS_ALLOW_ORIGIN,
     DEFAULT_LOCALE,
     OAUTH_PROVIDERS,
     WEBUI_URL,
@@ -260,7 +248,6 @@ from src.service.utils.config_service import (
 )
 from src.service.utils.middleware_service import process_chat_payload, process_chat_response
 from src.service.utils.security_headers_service import SecurityHeadersMiddleware
-
 from src.service.utils.task_service import stop_task, list_tasks  # Import from tasks.py
 
 if SAFE_MODE:

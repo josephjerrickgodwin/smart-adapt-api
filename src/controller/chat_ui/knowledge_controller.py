@@ -93,6 +93,7 @@ async def get_knowledge_list(user=Depends(get_verified_user)):
 @router.post("/create", response_model=Optional[KnowledgeResponse])
 async def create_new_knowledge(
         request: Request,
+        background_tasks: BackgroundTasks,
         name: str = Form(...),
         description: str = Form(...),
         question_column_name: str = Form(...),
@@ -100,7 +101,6 @@ async def create_new_knowledge(
         file: UploadFile = File(...),
         access_control: Optional[str] = Form(None),
         user=Depends(get_verified_user),
-        background_tasks: BackgroundTasks = None
 ):
     if user.role != "admin" and not has_permission(
         user.id, "workspace.knowledge", request.app.state.config.USER_PERMISSIONS
@@ -194,14 +194,13 @@ async def create_new_knowledge(
 
     # Add the background task
     background_tasks.add_task(
-        model_service.fine_tuning_handler(
-            df=df,
-            user_id=user.id,
-            knowledge_id=knowledge.id,
-            question_column_name=question_column_name,
-            answer_column_name=answer_column_name,
-            file_data=file_data
-        )
+        model_service.fine_tuning_handler,
+        df=df,
+        user_id=user.id,
+        knowledge_id=knowledge.id,
+        question_column_name=question_column_name,
+        answer_column_name=answer_column_name,
+        file_data=file_data
     )
 
     return knowledge
@@ -257,7 +256,7 @@ async def delete_knowledge_by_id(id: str, user=Depends(get_verified_user)):
     log.info(f"Deleting knowledge base: {id} (name: {knowledge.name})")
 
     # Check for model Knowledge
-    userdata_dir = storage_manager.get_user_dir(user.id)
+    userdata_dir = await storage_manager.get_user_dir(user.id)
     lora_path = model_service.get_lora_path(
         data_path=userdata_dir,
         knowledge_id=id

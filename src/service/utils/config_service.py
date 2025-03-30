@@ -1,14 +1,12 @@
 import json
 import logging
 import os
-import shutil
 from datetime import datetime
 from pathlib import Path
 from typing import Generic, Optional, TypeVar
 from urllib.parse import urlparse
 
 import chromadb
-import requests
 from pydantic import BaseModel
 from sqlalchemy import JSON, Column, DateTime, Integer, func
 
@@ -17,7 +15,6 @@ from src.service.env import (
     DATA_DIR,
     DATABASE_URL,
     ENV,
-    FRONTEND_BUILD_DIR,
     OFFLINE_MODE,
     OPEN_WEBUI_DIR,
     WEBUI_AUTH,
@@ -564,30 +561,6 @@ load_oauth_providers()
 ####################################
 
 STATIC_DIR = Path(os.getenv("STATIC_DIR", OPEN_WEBUI_DIR / "static")).resolve()
-
-frontend_favicon = FRONTEND_BUILD_DIR / "static" / "favicon.png"
-
-if frontend_favicon.exists():
-    try:
-        shutil.copyfile(frontend_favicon, STATIC_DIR / "favicon.png")
-    except Exception as e:
-        logging.error(f"An error occurred: {e}")
-
-frontend_splash = FRONTEND_BUILD_DIR / "static" / "splash.png"
-
-if frontend_splash.exists():
-    try:
-        shutil.copyfile(frontend_splash, STATIC_DIR / "splash.png")
-    except Exception as e:
-        logging.error(f"An error occurred: {e}")
-
-frontend_loader = FRONTEND_BUILD_DIR / "static" / "loader.js"
-
-if frontend_loader.exists():
-    try:
-        shutil.copyfile(frontend_loader, STATIC_DIR / "loader.js")
-    except Exception as e:
-        logging.error(f"An error occurred: {e}")
 
 ####################################
 # LICENSE_KEY
@@ -1591,6 +1564,7 @@ CHUNK_OVERLAP = PersistentConfig(
 )
 
 DEFAULT_RAG_TEMPLATE = """### Task:
+You are SmartAdapt AI assistant, developed by Jerrick Godwin, as part of his final year project at Informatics Institute of Technology, affiliate with University of Westminster.
 Respond to the user query using the provided context, incorporating inline citations in the format [source_id] **only when the <source_id> tag is explicitly provided** in the context.
 
 ### Guidelines:

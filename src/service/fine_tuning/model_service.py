@@ -1,4 +1,3 @@
-import asyncio
 import gc
 import logging
 import os
@@ -13,7 +12,6 @@ from datasets import Dataset
 from dotenv import load_dotenv
 from peft import (
     PeftModel,
-    PeftConfig,
     LoraConfig,
     get_peft_model,
 )
@@ -21,7 +19,7 @@ from sklearn.model_selection import train_test_split
 from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
-    AsyncTextIteratorStreamer
+    BitsAndBytesConfig
 )
 from trl import SFTTrainer, SFTConfig
 
@@ -30,6 +28,7 @@ from src.exception.inference_disabled_error import InferenceDisabledError
 from src.model.knowledge import Knowledges
 from src.service import prompt_service
 from src.service.storage_manager import storage_manager
+from src.service.utils.smart_adapt_streamer import SmartAdaptStreamer
 
 load_dotenv()
 
@@ -44,6 +43,7 @@ class ModelService:
     """
     Main service for LLM inference.
     """
+
     def __init__(self):
         self.token = HF_TOKEN
         self.data_model_name = 'adapters'
@@ -54,13 +54,20 @@ class ModelService:
         self.model = None
 
         # Define the device
-        self.device = 'cuda' if torch.cuda.is_available() else 'cpu'
+        if torch.cuda.is_available():
+            current_device_index = torch.cuda.current_device()
+            self.device = torch.device(f"cuda:{current_device_index}")
+        else:
+            self.device = torch.device("cpu")
 
         # Define the current user
         self.current_user = None
         self.lora_loaded = False
         self.inference_enabled = True
         self.loaded_lora_ids = []
+
+        # Define repetition penalty for completions
+        self.repetition_penalty = 1.2
 
         # Load weights
         # self._load_weights()
@@ -70,8 +77,8 @@ class ModelService:
         self.inference_enabled = False
 
         # Unload the thinker and inference models along with the tokenizers
-        self.tokenizer = None
-        self.model = None
+        del self.tokenizer
+        del self.model
 
         # Reset adapter and user details
         self.current_user = None
@@ -197,10 +204,9 @@ class ModelService:
                 continue
 
             # Load the LoRA adapter
-            peft_config = PeftConfig.from_pretrained(lora_path)
             self.model = PeftModel.from_pretrained(
                 self.model,
-                peft_config,
+                lora_path,
                 adapter_name=user_id
             ).to(self.device)
 
@@ -237,15 +243,11 @@ class ModelService:
         system_prompt = prompt_service.query_rewrite_system_instruction.strip()
         updated_history = [
             {
-                "role": "system",
-                "content": system_prompt
-            },
-            {
                 "role": "user",
-                "content": prompt
+                "content": system_prompt + prompt
             }
         ]
-        
+
         # Apply chat template
         updated_messages = self.tokenizer.apply_chat_template(updated_history, tokenize=False)
 
@@ -257,7 +259,7 @@ class ModelService:
         ).to(self.device)
 
         # Define the streamer
-        streamer = AsyncTextIteratorStreamer(
+        streamer = SmartAdaptStreamer(
             tokenizer=self.tokenizer,
             skip_prompt=True,
             skip_special_tokens=True
@@ -269,6 +271,7 @@ class ModelService:
             max_new_tokens=512,
             attention_mask=tokens.attention_mask,
             pad_token_id=self.tokenizer.eos_token_id,
+            repetition_penalty=self.repetition_penalty,
             streamer=streamer
         )
         logger.info('Started generating the updated query...')
@@ -309,7 +312,7 @@ class ModelService:
 
         # Define the streamer
         logger.info('Initializing the tokenizer properties')
-        streamer = AsyncTextIteratorStreamer(
+        streamer = SmartAdaptStreamer(
             tokenizer=self.tokenizer,
             skip_prompt=True,
             skip_special_tokens=True
@@ -333,6 +336,7 @@ class ModelService:
             input_ids=tokens.input_ids,
             attention_mask=tokens.attention_mask,
             pad_token_id=self.tokenizer.eos_token_id,
+            repetition_penalty=self.repetition_penalty,
             streamer=streamer,
             **params
         )
@@ -362,6 +366,14 @@ class ModelService:
         """
         Loads the `thinker` and `inference` model instances
         """
+        # QLoRA config
+        bnb_config = BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=torch.float16,
+            bnb_4bit_use_double_quant=False,
+        )
+
         # Load the tokenizer
         logger.info('Started loading the tokenizer')
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -374,8 +386,12 @@ class ModelService:
         self.model = AutoModelForCausalLM.from_pretrained(
             MODEL_ID,
             token=self.token,
-            device_map=self.device
+            device_map=self.device,
+            quantization_config=bnb_config
         )
+
+        # Set padding token
+        self.tokenizer.pad_token = self.tokenizer.eos_token
 
     async def fine_tuning_handler(
             self,
@@ -386,93 +402,98 @@ class ModelService:
             answer_column_name: str,
             file_data: dict
     ):
-        # Pre-process the data
-        documents = []
-        for index, row in df.iterrows():
-            question = row[question_column_name]
-            answer = row[answer_column_name]
+        try:
+            # Pre-process the data
+            documents = []
+            for index, row in df.iterrows():
+                question = row[question_column_name]
+                answer = row[answer_column_name]
 
-            # Skip any empty rows
-            if not question or not answer:
-                continue
+                # Skip any empty rows
+                if not question or not answer:
+                    continue
 
-            # Fix any inconsistencies
-            question = ftfy.fix_text(question)
-            answer = ftfy.fix_text(answer)
+                # Fix any inconsistencies
+                question = ftfy.fix_text(question)
+                answer = ftfy.fix_text(answer)
 
-            # Formulate the history
-            history = [
-                {
-                    "role": "user",
-                    "content": question
-                },
-                {
-                    "role": "assistant",
-                    "content": answer
-                }
-            ]
+                # Formulate the history
+                history = [
+                    {
+                        "role": "user",
+                        "content": question
+                    },
+                    {
+                        "role": "assistant",
+                        "content": answer
+                    }
+                ]
 
-            # Apply the chat template
-            formatted_history = self.tokenizer.apply_chat_template(history, tokenize=False)
+                # Apply the chat template
+                formatted_history = self.tokenizer.apply_chat_template(history, tokenize=False)
 
-            # Tokenize the text
-            tokenized_data = self.tokenizer(
-                formatted_history,
-                padding="max_length",
-                truncation=True,
-                max_length=512
+                # Tokenize the text
+                tokenized_data = self.tokenizer(
+                    formatted_history,
+                    padding="max_length",
+                    truncation=True,
+                    max_length=512
+                )
+
+                # Create labels (shifted input IDs for causal language modeling)
+                tokenized_data["labels"] = tokenized_data["input_ids"].copy()
+
+                # Ignore padding tokens for loss calculation
+                tokenized_data["labels"][tokenized_data["labels"] == self.tokenizer.pad_token_id] = -100
+                documents.append(tokenized_data)
+
+            # Remove the previous dataframe
+            del df
+            gc.collect()
+
+            # Check for documents are present
+            if not documents:
+                raise Exception("No documents")
+
+            # Convert to DataFrame
+            df = pd.DataFrame(documents)
+
+            # Drop rows where the 'answer' and 'answer' column is empty or null.
+            df = df.dropna(subset=[question_column_name, answer_column_name])
+
+            # Split for train, eval
+            train_df, eval_df = train_test_split(df, test_size=0.2, random_state=42)
+
+            # Convert to dataset supportable format
+            train_df = Dataset.from_pandas(train_df)
+            eval_df = Dataset.from_pandas(eval_df)
+
+            # Calculate LoRA Hyperparameters
+            hyperparameters = self.calculate_lora_hyperparameters(len(df))
+
+            # Start training the model
+            await self.fine_tune(
+                user_id=user_id,
+                train_df=train_df,
+                eval_df=eval_df,
+                knowledge_id=knowledge_id,
+                r=hyperparameters['r'],
+                lora_alpha=hyperparameters['lora_alpha']
             )
 
-            # Create labels (shifted input IDs for causal language modeling)
-            tokenized_data["labels"] = tokenized_data["input_ids"].copy()
-
-            # Ignore padding tokens for loss calculation
-            tokenized_data["labels"][tokenized_data["labels"] == self.tokenizer.pad_token_id] = -100
-            documents.append(tokenized_data)
-
-        # Remove the previous dataframe
-        del df
-        gc.collect()
-
-        # Check for documents are present
-        if not documents:
             # Update the knowledge
+            file_data['status'] = 'Completed'
+            _ = Knowledges.update_knowledge_data_by_id(
+                id=knowledge_id,
+                data=file_data
+            )
+        except Exception as e:
+            logger.error(f'Fine-tuning error: {str(e)}')
             file_data['status'] = 'Failed'
             _ = Knowledges.update_knowledge_data_by_id(
                 id=knowledge_id,
                 data=file_data
             )
-            return
-
-        # Convert to DataFrame
-        df = pd.DataFrame(documents)
-
-        # Split for train, eval
-        train_df, eval_df = train_test_split(df, test_size=0.2, random_state=42)
-
-        # Convert to dataset supportable format
-        train_df = Dataset.from_pandas(train_df)
-        eval_df = Dataset.from_pandas(eval_df)
-
-        # Calculate LoRA Hyperparameters
-        hyperparameters = self.calculate_lora_hyperparameters(len(df))
-
-        # Start training the model
-        await self.fine_tune(
-            user_id=user_id,
-            train_df=train_df,
-            eval_df=eval_df,
-            knowledge_id=knowledge_id,
-            r=hyperparameters['r'],
-            lora_alpha=hyperparameters['lora_alpha']
-        )
-
-        # Update the knowledge
-        file_data['status'] = 'Completed'
-        _ = Knowledges.update_knowledge_data_by_id(
-            id=knowledge_id,
-            data=file_data
-        )
 
     async def prepare_model(
             self,
@@ -514,8 +535,10 @@ class ModelService:
             knowledge_id: str,
             fp16: bool = True,
             bf16: bool = False,
+            fp16_full_eval: bool = True,
             num_epochs: int = 3,
-            eval_steps: int = 0.2,
+            eval_steps: int = 100,
+            optim: str = "adamw_bnb_8bit",
             logging_steps: int = 10,
             warmup_steps: int = 500,
             max_seq_len: int = 512,
@@ -538,10 +561,12 @@ class ModelService:
             knowledge_id (str): Unique ID of the knowledge request
             fp16 (bool): Whether to use float16
             bf16 (bool): Whether to use bfloat16
+            fp16_full_eval (bool): Whether to perform evaluation in float16
             num_epochs (int): Number of training epochs
             max_seq_len (int): Maximum sequence length from the dataset
             group_by_length (int): Whether to group the dataset by the length of the longest sequence
             eval_steps (int): Number of evaluation steps
+            optim (str): Optimizer name
             logging_steps (int): Number of logging steps
             warmup_steps (int): Number of warmup steps
             learning_rate (float): Learning rate for training
@@ -587,7 +612,7 @@ class ModelService:
             per_device_train_batch_size=per_device_train_batch_size,
             per_device_eval_batch_size=per_device_eval_batch_size,
             gradient_accumulation_steps=gradient_accumulation_steps,
-            optim="paged_adamw_32bit",
+            optim=optim,
             num_train_epochs=num_epochs,
             eval_strategy="steps",
             eval_steps=eval_steps,
@@ -597,6 +622,7 @@ class ModelService:
             learning_rate=learning_rate,
             fp16=fp16,
             bf16=bf16,
+            fp16_full_eval=fp16_full_eval,
             group_by_length=group_by_length,
             max_seq_length=max_seq_len,
             report_to=report_to

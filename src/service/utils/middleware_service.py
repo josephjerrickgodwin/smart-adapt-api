@@ -429,20 +429,35 @@ async def process_chat_payload(form_data: dict, metadata, user):
         )
         log.info(f'Rewritten query: {rewritten_query}')
 
-    # Get the index file from the DB
-    log.info("Started fetching the existing index")
+    # If custom knowledge is given, refrain from using RAG
+    files = metadata.get('files', [])
+    files = files if files else []
+    knowledge_count, files_count = 0, 0
+    for file_info in files:
+        file_type = file_info.get('type', '')
+        if file_type == 'file':
+            files_count += 1
+        elif file_type == 'collection':
+            knowledge_count += 1
 
-    # Format the index file name
-    index_filename = f'{user.id}__index.pkl'
+    # Based on the file types, determine the retrieval
+    use_rag = not knowledge_count or files_count
 
-    # Check if an index is available for the user
-    rag_service = Storage.get_file(index_filename)
+    if use_rag:
+        # Get the index file from the DB
+        log.info("Started fetching the existing index")
 
-    if rag_service:
+        # Format the index file name
+        index_filename = f'{user.id}__index.pkl'
+
+        # Check if an index is available for the user
+        rag_service = Storage.get_file(index_filename)
+
         # Start search
-        log.info(f"Started querying the vector store")
-        sources = await rag_service.search(query=rewritten_query)
-        log.info(f'Received a total of {len(sources)} context')
+        if rag_service:
+            log.info(f"Started querying the vector store")
+            sources = await rag_service.search(query=rewritten_query)
+            log.info(f'Received a total of {len(sources)} context')
 
     features = form_data.pop("features", {})
     if features:
