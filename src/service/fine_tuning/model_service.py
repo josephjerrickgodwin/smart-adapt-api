@@ -29,8 +29,6 @@ from src.exception.fine_tuning_disabled_error import FineTuningDisabledError
 from src.exception.inference_disabled_error import InferenceDisabledError
 from src.model.knowledge import Knowledges
 from src.service import prompt_service
-from src.service.TextStreamer import SmartAdaptTextStreamer
-from src.service.inference_model_service import inference_model_service
 from src.service.storage_manager import storage_manager
 
 load_dotenv()
@@ -295,119 +293,6 @@ class ModelService:
 
         return new_query
 
-    async def start_inference(
-            self,
-            user_id: str,
-            user_query: str,
-            history: list,
-            context: str = '',
-            index: int = 0,
-            message_id: int = 0,
-            parent_id: int = 0,
-            max_new_tokens: int = 2048
-    ):
-        if not self.inference_enabled:
-            raise InferenceDisabledError("The model is being trained. Please try again later!")
-
-        # Load user adapter
-        await self._load_adapter(user_id)
-
-        logger.info(f'Context size: {len(context)}')
-
-        # Define the streamer
-        streamer = SmartAdaptTextStreamer(
-            tokenizer=self.tokenizer,
-            text_type="thinking",
-            model='',
-            index=index,
-            message_id=message_id,
-            parent_id=parent_id,
-            skip_prompt=True,
-            skip_special_tokens=True
-        )
-
-        reasoned_context = ''
-        if context:
-            logger.info('Started re-arranging the message for reasoning')
-
-            # Format messages
-            system_prompt_for_cot = prompt_service.system_prompt_for_thinker_model.strip()
-
-            # Add context to reasoning
-            updated_query = f'<information>\n{context}\n</information>\n{user_query}' if context else user_query
-
-            # Define the conversation
-            messages = [
-                {
-                    "role": "system",
-                    "content": system_prompt_for_cot
-                },
-                {
-                    "role": "user",
-                    "content": updated_query.strip()
-                }
-            ]
-
-            # Apply chat template
-            updated_messages = self.tokenizer.apply_chat_template(messages, tokenize=False)
-
-            logger.info('Started tokenizing the conversation')
-
-            # Tokenize the messages
-            tokens = self.tokenizer(
-                updated_messages,
-                add_special_tokens=True,
-                return_tensors="pt"
-            ).to(self.device)
-
-            logger.info('Started defining the hyperparameters for reasoning')
-
-            # Define the generation kwargs
-            thinker_kwargs = dict(
-                input_ids=tokens.input_ids,
-                max_new_tokens=512,
-                attention_mask=tokens.attention_mask,
-                pad_token_id=self.tokenizer.eos_token_id,
-                # do_sample=True,
-                # repetition_penalty=1.8,
-                streamer=streamer
-            )
-
-            logger.info('Started the reasoning process')
-
-            # Define the thread
-            thread = Thread(target=self.model.generate, kwargs=thinker_kwargs)
-
-            # Start the thread
-            thread.start()
-
-            # # Start streaming the reasoning
-            # async for chunk in streamer:
-            #     if chunk:
-            #         yield f'data: {chunk}\n\n'
-
-            logger.info('Extracting the reasining and preparing for inference')
-
-            # Get the streamed message from the `thinker` model
-            reasoning = streamer.get_response()
-
-            # Add `context` and reasoning as a new context
-            reasoned_context = f'<information>\n{context}\n\nExplanation:\n{reasoning}\n</information>'
-
-        # Update the streamer for `text` streaming
-        streamer.update_text_type('text')
-        logger.info('Starting the inference')
-
-        # Start inference
-        async for chunk in inference_model_service.get_result(
-            query=user_query,
-            context=reasoned_context,
-            history=history
-        ):
-            yield chunk
-
-        logger.info('Request have been served successfully')
-
     async def start_completions(
             self,
             user_id: str,
@@ -467,7 +352,8 @@ class ModelService:
         else:
             chunks = ''
             async for chunk in streamer:
-                chunks += chunk
+                if chunk is not None:
+                    chunks += chunk
             yield chunks
 
         logger.info('Request have been served successfully')

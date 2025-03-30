@@ -404,7 +404,7 @@ async def delete_chat_by_id(request: Request, id: str, user=Depends(get_verified
     rag_service = Storage.get_file(data_filename)
     if rag_service:
         # Remove files corresponding to the index
-        await rag_service.index_store.remove_index(id)
+        rag_service.index_store.remove_index(id)
 
     return result
 

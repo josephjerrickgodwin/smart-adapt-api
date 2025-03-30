@@ -32,7 +32,7 @@ class IndexStore:
             m: int
     ):
         """Creates a new index for a given session ID."""
-        if session_id in self.indices:
+        if session_id in self.indices.keys():
             return  # Index already exists for this session
 
         # Create a new FAISS index for the session
@@ -46,7 +46,7 @@ class IndexStore:
         self.embeddings[session_id] = None
 
     async def add_index(self, session_id: str, vectors: np.ndarray, labels: List[str]):
-        assert session_id in self.indices, "Session index not found. Call create_session_index first."
+        assert session_id in self.indices.keys(), "Session index not found. Call create_session_index first."
 
         # Add the embeddings to the index
         index = self.indices[session_id]
@@ -93,7 +93,7 @@ class IndexStore:
             Exception:
                 For any other errors encountered during the search process.
         """
-        if not self.indices:
+        if not self.indices.keys():
             raise ValueError('Index is not initialized!')
 
         results = []
@@ -170,7 +170,7 @@ class IndexStore:
             Exception:
                 For any other errors encountered during the search process.
         """
-        if not self.indices:
+        if not self.indices.keys():
             raise ValueError('Index is not initialized!')
 
         results, scores = [], []
@@ -227,7 +227,7 @@ class IndexStore:
             top_k: int = 0,
             return_embeddings: bool = False
     ):
-        assert self.indices is not None, "Index has not been initialized"
+        assert self.indices.keys(), "Index has not been initialized"
 
         results = []
         for i in range(len(query_embeddings)):

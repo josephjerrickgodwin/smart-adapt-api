@@ -192,17 +192,17 @@ async def create_new_knowledge(
             detail=ERROR_MESSAGES.FILE_EXISTS,
         )
 
-    # # Add the background task
-    # background_tasks.add_task(
-    #     model_service.fine_tuning_handler(
-    #         df=df,
-    #         user_id=user.id,
-    #         knowledge_id=knowledge.id,
-    #         question_column_name=question_column_name,
-    #         answer_column_name=answer_column_name,
-    #         file_data=file_data
-    #     )
-    # )
+    # Add the background task
+    background_tasks.add_task(
+        model_service.fine_tuning_handler(
+            df=df,
+            user_id=user.id,
+            knowledge_id=knowledge.id,
+            question_column_name=question_column_name,
+            answer_column_name=answer_column_name,
+            file_data=file_data
+        )
+    )
 
     return knowledge
 

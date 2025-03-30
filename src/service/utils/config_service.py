@@ -40,26 +40,6 @@ logging.getLogger("uvicorn.access").addFilter(EndpointFilter())
 WEBUI_NAME = 'SmartAdapt'
 
 
-# Function to run the alembic migrations
-def run_migrations():
-    try:
-        from alembic import command
-        from alembic.config import Config
-
-        alembic_cfg = Config(OPEN_WEBUI_DIR / "alembic.ini")
-
-        # Set the script location dynamically
-        migrations_path = OPEN_WEBUI_DIR / "migrations"
-        alembic_cfg.set_main_option("script_location", str(migrations_path))
-
-        command.upgrade(alembic_cfg, "head")
-    except Exception as e:
-        print(f"Error: {e}")
-
-
-run_migrations()
-
-
 class Config(Base):
     __tablename__ = "config"
 
@@ -673,10 +653,6 @@ ENABLE_OLLAMA_API = PersistentConfig(
     os.environ.get("ENABLE_OLLAMA_API", "True").lower() == "true",
 )
 
-OLLAMA_API_BASE_URL = os.environ.get(
-    "OLLAMA_API_BASE_URL", "http://localhost:11434/api"
-)
-
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "")
 if OLLAMA_BASE_URL:
     # Remove trailing slash
@@ -687,13 +663,6 @@ if OLLAMA_BASE_URL:
 
 K8S_FLAG = os.environ.get("K8S_FLAG", "")
 USE_OLLAMA_DOCKER = os.environ.get("USE_OLLAMA_DOCKER", "false")
-
-if OLLAMA_BASE_URL == "" and OLLAMA_API_BASE_URL != "":
-    OLLAMA_BASE_URL = (
-        OLLAMA_API_BASE_URL[:-4]
-        if OLLAMA_API_BASE_URL.endswith("/api")
-        else OLLAMA_API_BASE_URL
-    )
 
 if ENV == "prod":
     if OLLAMA_BASE_URL == "/ollama" and not K8S_FLAG:
@@ -1437,8 +1406,6 @@ if CHROMA_HTTP_HEADERS:
 else:
     CHROMA_HTTP_HEADERS = None
 CHROMA_HTTP_SSL = os.environ.get("CHROMA_HTTP_SSL", "false").lower() == "true"
-# this uses the model defined in the Dockerfile ENV variable. If you dont use docker or docker based deployments such as k8s, the default embedding model will be used (sentence-transformers/all-MiniLM-L6-v2)
-
 # Milvus
 
 MILVUS_URI = os.environ.get("MILVUS_URI", f"{DATA_DIR}/vector_db/milvus.db")

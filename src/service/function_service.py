@@ -125,6 +125,7 @@ async def generate_function_chat_completion(
         try:
             # Define the knowledge sources
             files = metadata.get('files', [])
+            files = files if files else []
             knowledge_sources = [
                 file_info.get('id')
                 for file_info in files

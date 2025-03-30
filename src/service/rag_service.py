@@ -45,14 +45,12 @@ class RAGService:
             for idx, result in enumerate(self.optimization_results, start=1)
         ]
 
-    async def get_optimal_hyperparameters(self):
+    def get_optimal_hyperparameters(self):
         assert self.optimization_results is not None, "Hyperparameters have not been optimized yet!"
         return {
-            'M': self.m,
-            'Recall': self.recall,
+            'm': self.m,
             'ef_construction': self.ef_construction,
             'ef_search': self.ef_search,
-            'data_count': len(self.index_store)
         }
 
     async def configure_vector_store(self, session_id: str, embeddings: np.ndarray, docs: List[str]):

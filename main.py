@@ -260,11 +260,7 @@ from src.service.utils.config_service import (
 )
 from src.service.utils.middleware_service import process_chat_payload, process_chat_response
 from src.service.utils.security_headers_service import SecurityHeadersMiddleware
-from src.service.utils.storage.retrieval_service import (
-    get_embedding_function,
-    get_ef,
-    get_rf,
-)
+
 from src.service.utils.task_service import stop_task, list_tasks  # Import from tasks.py
 
 if SAFE_MODE:
@@ -494,39 +490,6 @@ app.state.rf = None
 
 app.state.YOUTUBE_LOADER_TRANSLATION = None
 
-
-try:
-    app.state.ef = get_ef(
-        app.state.config.RAG_EMBEDDING_ENGINE,
-        app.state.config.RAG_EMBEDDING_MODEL,
-        RAG_EMBEDDING_MODEL_AUTO_UPDATE,
-    )
-
-    app.state.rf = get_rf(
-        app.state.config.RAG_RERANKING_MODEL,
-        RAG_RERANKING_MODEL_AUTO_UPDATE,
-    )
-except Exception as e:
-    log.error(f"Error updating models: {e}")
-    pass
-
-
-app.state.EMBEDDING_FUNCTION = get_embedding_function(
-    app.state.config.RAG_EMBEDDING_ENGINE,
-    app.state.config.RAG_EMBEDDING_MODEL,
-    app.state.ef,
-    (
-        app.state.config.RAG_OPENAI_API_BASE_URL
-        if app.state.config.RAG_EMBEDDING_ENGINE == "openai"
-        else app.state.config.RAG_OLLAMA_BASE_URL
-    ),
-    (
-        app.state.config.RAG_OPENAI_API_KEY
-        if app.state.config.RAG_EMBEDDING_ENGINE == "openai"
-        else app.state.config.RAG_OLLAMA_API_KEY
-    ),
-    app.state.config.RAG_EMBEDDING_BATCH_SIZE,
-)
 
 ########################################
 #

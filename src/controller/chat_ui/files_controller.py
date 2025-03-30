@@ -4,18 +4,16 @@ import os
 import pickle
 import time
 import uuid
-import ftfy
 from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
 
+import ftfy
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
-from fastapi.responses import FileResponse, StreamingResponse
-from pydantic import BaseModel
+from fastapi.responses import FileResponse
 
 from src.model.constants import ERROR_MESSAGES
 from src.model.files import (
-    FileForm,
     FileModel,
     FileModelResponse,
     Files, FileMeta,
@@ -26,7 +24,6 @@ from src.service.fine_tuning.data_preprocessor import data_preprocessor
 from src.service.rag_service import RAGService
 from src.service.utils.auth_service import get_admin_user, get_verified_user
 from src.service.utils.storage.document_loader import Loader
-from src.service.utils.storage.retrieval_service import ProcessFileForm, process_file
 from src.service.utils.storage.storage_service import Storage
 
 log = logging.getLogger(__name__)
@@ -38,7 +35,6 @@ router = APIRouter(prefix="/api/v1/files", tags=["files"])
 ############################
 # Upload File
 ############################
-
 
 @router.post("/", response_model=FileModelResponse)
 async def upload_file(
@@ -53,7 +49,7 @@ async def upload_file(
         un_sanitized_filename = file.filename
         filename = os.path.basename(un_sanitized_filename)
 
-        # replace filename with uuid
+        # Replace filename with uuid
         id = str(uuid.uuid4())
         data_filename = f"{user.id}__index.pkl"
         temp_filename = f"tmp-{id}_{filename}"
@@ -107,12 +103,26 @@ async def upload_file(
             log.info("Generating embeddings for the data")
             embeddings = await embedding_service.get_embeddings(documents)
 
+            # Get the existing hyperparameters
+            hyperparameters = rag_service.get_optimal_hyperparameters()
+
+            # Initialize a new session (If not already exist)
+            await rag_service.index_store.create_session_for_index(
+                session_id=session_id,
+                ef_construction=hyperparameters['ef_construction'],
+                ef_search=hyperparameters['ef_search'],
+                m=hyperparameters['m']
+            )
+
             # Add new data to the index
             await rag_service.index_store.add_index(
                 session_id=session_id,
                 vectors=embeddings,
                 labels=documents
             )
+
+            # Remove the existing index store from the storage
+            Storage.delete_file(data_filename)
         else:
             # Create the RAG service and configure the vector store (HNSW)
             rag_service = RAGService()
@@ -128,9 +138,6 @@ async def upload_file(
                 embeddings=embeddings,
                 docs=documents
             )
-
-            # Remove the existing index store from the storage
-            Storage.delete_file(data_filename)
 
         # Serialize with pickle
         pickle_bytes = pickle.dumps(rag_service)
@@ -248,41 +255,6 @@ async def get_file_data_content_by_id(id: str, user=Depends(get_verified_user)):
 
 
 ############################
-# Update File Data Content By Id
-############################
-
-
-class ContentForm(BaseModel):
-    content: str
-
-
-@router.post("/{id}/data/content/update")
-async def update_file_data_content_by_id(
-        request: Request, id: str, form_data: ContentForm, user=Depends(get_verified_user)
-):
-    file = Files.get_file_by_id(id)
-
-    if file and (file.user_id == user.id or user.role == "admin"):
-        try:
-            process_file(
-                request,
-                ProcessFileForm(file_id=id, content=form_data.content),
-                user=user,
-            )
-            file = Files.get_file_by_id(id=id)
-        except Exception as e:
-            log.exception(e)
-            log.error(f"Error processing file: {file.id}")
-
-        return {"content": file.data.get("content", "")}
-    else:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=ERROR_MESSAGES.NOT_FOUND,
-        )
-
-
-############################
 # Get File Content By Id
 ############################
 
@@ -330,89 +302,6 @@ async def get_file_content_by_id(id: str, user=Depends(get_verified_user)):
             status_code=status.HTTP_404_NOT_FOUND,
             detail=ERROR_MESSAGES.NOT_FOUND,
         )
-
-
-@router.get("/{id}/content/html")
-async def get_html_file_content_by_id(id: str, user=Depends(get_verified_user)):
-    file = Files.get_file_by_id(id)
-    if file and (file.user_id == user.id or user.role == "admin"):
-        try:
-            file_path = Storage.get_file(file.path)
-            file_path = Path(file_path)
-
-            # Check if the file already exists in the cache
-            if file_path.is_file():
-                print(f"file_path: {file_path}")
-                return FileResponse(file_path)
-            else:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=ERROR_MESSAGES.NOT_FOUND,
-                )
-        except Exception as e:
-            log.exception(e)
-            log.error("Error getting file content")
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=ERROR_MESSAGES.DEFAULT("Error getting file content"),
-            )
-    else:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=ERROR_MESSAGES.NOT_FOUND,
-        )
-
-
-@router.get("/{id}/content/{file_name}")
-async def get_file_content_by_id(id: str, user=Depends(get_verified_user)):
-    file = Files.get_file_by_id(id)
-
-    if file and (file.user_id == user.id or user.role == "admin"):
-        file_path = file.path
-
-        # Handle Unicode filenames
-        filename = file.meta.get("name", file.filename)
-        encoded_filename = quote(filename)  # RFC5987 encoding
-        headers = {
-            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"
-        }
-
-        if file_path:
-            file_path = Storage.get_file(file_path)
-            file_path = Path(file_path)
-
-            # Check if the file already exists in the cache
-            if file_path.is_file():
-                return FileResponse(file_path, headers=headers)
-            else:
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND,
-                    detail=ERROR_MESSAGES.NOT_FOUND,
-                )
-        else:
-            # File path doesn’t exist, return the content as .txt if possible
-            file_content = file.content.get("content", "")
-            file_name = file.filename
-
-            # Create a generator that encodes the file content
-            def generator():
-                yield file_content.encode("utf-8")
-
-            return StreamingResponse(
-                generator(),
-                media_type="text/plain",
-                headers=headers,
-            )
-    else:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=ERROR_MESSAGES.NOT_FOUND,
-        )
-
-
-############################
-# Delete File By Id
-############################
 
 
 @router.delete("/{id}")
