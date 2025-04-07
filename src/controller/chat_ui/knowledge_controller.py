@@ -1,11 +1,10 @@
+import io
 import logging
-import os
-import shutil
 from io import BytesIO
-from typing import Optional
+from typing import Optional, Tuple, List, Any
 
 import pandas as pd
-from fastapi import APIRouter, Depends, HTTPException, status, Request, UploadFile, File, Form, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, status, Request, UploadFile, File, Form
 
 from src.model.constants import ERROR_MESSAGES
 from src.model.files import Files, FileModel
@@ -14,9 +13,8 @@ from src.model.knowledge import (
     KnowledgeForm,
     KnowledgeResponse,
     KnowledgeUserResponse, )
+from src.service.client_service import client_service
 from src.service.env import SRC_LOG_LEVELS
-from src.service.fine_tuning.model_service import model_service
-from src.service.storage_manager import storage_manager
 from src.service.utils.access_control_service import has_access, has_permission
 from src.service.utils.auth_service import get_verified_user
 
@@ -26,8 +24,9 @@ log.setLevel(SRC_LOG_LEVELS["MODELS"])
 router = APIRouter(prefix="/api/v1/knowledge", tags=["knowledge"])
 
 
-def get_knowledge_files(knowledge_bases: list) -> list[KnowledgeUserResponse]:
-    knowledge_with_files = []
+def get_knowledge_files(knowledge_bases: list):
+    knowledge_with_files = {}
+    knowledge_ids = []
     for knowledge_base in knowledge_bases:
         files = []
         if knowledge_base.data:
@@ -55,13 +54,12 @@ def get_knowledge_files(knowledge_bases: list) -> list[KnowledgeUserResponse]:
 
                     files = Files.get_file_metadatas_by_ids(file_ids)
 
-        knowledge_with_files.append(
-            KnowledgeUserResponse(
-                **knowledge_base.model_dump(),
-                files=files,
-            )
+        knowledge_with_files[knowledge_base.id] = KnowledgeUserResponse(
+            **knowledge_base.model_dump(),
+            files=files,
         )
-    return knowledge_with_files
+        knowledge_ids.append(knowledge_base.id)
+    return knowledge_ids, knowledge_with_files
 
 
 @router.get("/", response_model=list[KnowledgeUserResponse])
@@ -72,9 +70,29 @@ async def get_knowledge(user=Depends(get_verified_user)):
         knowledge_bases = Knowledges.get_knowledge_bases_by_user_id(user.id, "read")
 
     # Get files for each knowledge base
-    knowledge_with_files = get_knowledge_files(knowledge_bases)
+    knowledge_ids, knowledge_with_files = get_knowledge_files(knowledge_bases)
 
-    return knowledge_with_files
+    # Check the knowledge status with the client
+    try:
+        knowledge_files = await client_service.get_knowledge_data_using_client(
+            user_role='admin' if user.role == "admin" else 'user',
+            knowledge_ids=knowledge_ids
+        )
+        for knowledge_file in knowledge_files:
+            knowledge_id = knowledge_file.get('id', '')
+            knowledge_data = knowledge_file.get('data', None)
+            if not knowledge_data:
+                continue
+            knowledge_with_files[knowledge_id].data = knowledge_data
+
+    except Exception as e:
+        log.exception(
+            'Error validating user knowledge with the client. '
+            'Falling back to default status. '
+            f'Traceback: {str(e)}'
+        )
+
+    return knowledge_with_files.values()
 
 
 @router.get("/list", response_model=list[KnowledgeUserResponse])
@@ -85,15 +103,35 @@ async def get_knowledge_list(user=Depends(get_verified_user)):
         knowledge_bases = Knowledges.get_knowledge_bases_by_user_id(user.id, "write")
 
     # Get files for each knowledge base
-    knowledge_with_files = get_knowledge_files(knowledge_bases)
+    knowledge_ids, knowledge_with_files = get_knowledge_files(knowledge_bases)
 
-    return knowledge_with_files
+    # Check the knowledge status with the client
+    try:
+        knowledge_files = await client_service.get_knowledge_data_using_client(
+            user_role='admin' if user.role == "admin" else 'user',
+            knowledge_ids=knowledge_ids
+        )
+        for knowledge_file in knowledge_files:
+            knowledge_id = knowledge_file.get('id', '')
+            knowledge_data = knowledge_file.get('data', None)
+            if not knowledge_data:
+                continue
+            knowledge_with_files[knowledge_id].data = knowledge_data
+
+    except Exception as e:
+        log.exception(
+            'Error validating user knowledge with the client. '
+            'Falling back to default status. '
+            f'Traceback: {str(e)}'
+        )
+
+    validated_knowledge = knowledge_with_files.values()
+    return validated_knowledge
 
 
 @router.post("/create", response_model=Optional[KnowledgeResponse])
 async def create_new_knowledge(
         request: Request,
-        background_tasks: BackgroundTasks,
         name: str = Form(...),
         description: str = Form(...),
         question_column_name: str = Form(...),
@@ -155,14 +193,13 @@ async def create_new_knowledge(
 
         if knowledge_filename == filename and knowledge_size == file_size:
             if knowledge_status == 'Failed':
-                # Remove the knowledge
                 _ = Knowledges.delete_knowledge_by_id(kb.id)
-                break
             elif knowledge_status == 'In Progress':
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="The knowledge is currently being added to the model!"
-                )
+                _ = Knowledges.delete_knowledge_by_id(kb.id)
+                # raise HTTPException(
+                #     status_code=status.HTTP_400_BAD_REQUEST,
+                #     detail="The knowledge is currently being added to the model!"
+                # )
             else:
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
@@ -192,16 +229,36 @@ async def create_new_knowledge(
             detail=ERROR_MESSAGES.FILE_EXISTS,
         )
 
-    # Add the background task
-    background_tasks.add_task(
-        model_service.fine_tuning_handler,
-        df=df,
-        user_id=user.id,
-        knowledge_id=knowledge.id,
-        question_column_name=question_column_name,
-        answer_column_name=answer_column_name,
-        file_data=file_data
-    )
+    # Create a BytesIO stream (binary stream)
+    bytes_stream = io.BytesIO()
+
+    # Write the DataFrame to CSV using the text wrapper
+    df.to_csv(bytes_stream, index=False)
+
+    # Seek to the beginning of the BytesIO stream to read its content
+    bytes_stream.seek(0)
+
+    try:
+        # Start fine-tuning
+        _ = await client_service.fine_tuning_using_client(
+            user_id=user.id,
+            knowledge_id=knowledge.id,
+            question_column_name=question_column_name,
+            answer_column_name=answer_column_name,
+            file_stream=bytes_stream
+        )
+        file_data['status'] = 'Completed'
+        _ = Knowledges.update_knowledge_data_by_id(
+            id=knowledge.id,
+            data=file_data
+        )
+    except Exception as ex:
+        log.error(f'Fine-tuning error due to: {str(ex)}')
+        file_data['status'] = 'Failed'
+        _ = Knowledges.update_knowledge_data_by_id(
+            id=knowledge.id,
+            data=file_data
+        )
 
     return knowledge
 
@@ -254,23 +311,10 @@ async def delete_knowledge_by_id(id: str, user=Depends(get_verified_user)):
         )
 
     log.info(f"Deleting knowledge base: {id} (name: {knowledge.name})")
-
-    # Check for model Knowledge
-    userdata_dir = await storage_manager.get_user_dir(user.id)
-    lora_path = model_service.get_lora_path(
-        data_path=userdata_dir,
+    _ = await client_service.remove_lora_adapter_using_client(
+        user_id=user.id,
         knowledge_id=id
     )
-    logs_path = model_service.get_logs_path(
-        data_path=userdata_dir,
-        knowledge_id=id
-    )
-
-    # Remove knowledge, if found
-    if os.path.exists(lora_path) and len(os.listdir(lora_path)):
-        shutil.rmtree(lora_path)
-    if os.path.exists(logs_path) and len(os.listdir(logs_path)):
-        shutil.rmtree(logs_path)
 
     # Remove the knowledge data
     result = Knowledges.delete_knowledge_by_id(id=id)

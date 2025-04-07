@@ -1,33 +1,23 @@
-import inspect
+import json
 import json
 import logging
 import sys
-from typing import AsyncGenerator, Generator, Iterator
 
 from fastapi import (
     Request,
 )
-from pydantic import BaseModel
 from starlette.responses import StreamingResponse
 
 from src.model.functions import Functions
-from src.model.models import Models
+from src.service.client_service import client_service
 from src.service.env import SRC_LOG_LEVELS, GLOBAL_LOG_LEVEL
-from src.service.fine_tuning.model_service import model_service
-from src.service.sockets import (
-    get_event_call,
-    get_event_emitter,
-)
 from src.service.utils.misc_service import (
     openai_chat_chunk_message_template,
-    openai_chat_completion_message_template,
 )
 from src.service.utils.payload_service import (
-    apply_model_params_to_body_openai,
     apply_model_system_prompt_to_body,
 )
 from src.service.utils.plugin_service import load_function_module_by_id
-from src.service.utils.tool_service import get_tools
 
 logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
 log = logging.getLogger(__name__)
@@ -131,12 +121,11 @@ async def generate_function_chat_completion(
                 for file_info in files
                 if file_info.get('data', {}).get('status', '') == 'Completed'
             ]
-            async for chunk in model_service.start_completions(
+            async for chunk in client_service.start_completions_using_client(
                     user_id=user.id,
                     messages=form_data['messages'],
                     stream=stream,
-                    knowledge_ids=knowledge_sources,
-                    **params
+                    knowledge_ids=knowledge_sources
             ):
                 if isinstance(chunk, str):
                     message = openai_chat_chunk_message_template(form_data["model"], chunk)

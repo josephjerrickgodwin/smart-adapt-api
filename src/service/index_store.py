@@ -60,7 +60,8 @@ class IndexStore:
         if self.embeddings[session_id] is None:
             self.embeddings[session_id] = vectors
         else:
-            self.embeddings[session_id] = np.vstack((self.embeddings[session_id], vectors))
+            embeddings = self.embeddings[session_id]
+            self.embeddings[session_id] = np.vstack((embeddings, vectors))
 
     async def remove_index(self, session_id: str):
         """Removes the FAISS index for a given session."""
