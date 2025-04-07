@@ -1,10 +1,8 @@
 import ast
 import asyncio
-import base64
 import html
 import json
 import logging
-import os
 import re
 import sys
 import time
@@ -25,25 +23,21 @@ from src.model.constants import TASKS
 from src.model.users import UserModel
 from src.model.users import Users
 from src.service.chat_service import generate_chat_completion
+from src.service.client_service import client_service
 from src.service.env import (
     SRC_LOG_LEVELS,
     GLOBAL_LOG_LEVEL,
     ENABLE_REALTIME_CHAT_SAVE,
 )
-from src.service.fine_tuning.model_service import model_service
 from src.service.sockets import (
     get_event_call,
     get_event_emitter,
     get_active_status_by_user_id,
 )
-from src.service.storage_manager import storage_manager
-from src.service.utils.storage.storage_service import Storage
 from src.service.utils.code_interpreter_service import execute_code_jupyter
 from src.service.utils.config_service import (
-    CACHE_DIR,
     DEFAULT_TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE,
-    DEFAULT_CODE_INTERPRETER_PROMPT, CODE_INTERPRETER_ENGINE, DEFAULT_RAG_TEMPLATE,
-)
+    DEFAULT_CODE_INTERPRETER_PROMPT, CODE_INTERPRETER_ENGINE, )
 from src.service.utils.misc_service import (
     get_message_list,
     add_or_update_system_message,
@@ -51,6 +45,7 @@ from src.service.utils.misc_service import (
     get_last_user_message,
     get_last_assistant_message,
 )
+from src.service.utils.storage.storage_service import Storage
 from src.service.utils.storage.util_service import get_sources_from_files
 from src.service.utils.task_service import (
     create_task,
@@ -58,8 +53,6 @@ from src.service.utils.task_service import (
     rag_template,
     tools_function_calling_generation_template,
 )
-from src.service.utils.config_service import RAG_TEMPLATE
-
 from src.service.utils.webhook import post_webhook
 
 logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
@@ -413,6 +406,26 @@ def apply_params_to_form_data(form_data: dict):
     return form_data
 
 
+def extract_new_query(text: str):
+    """
+    Extracts text between <new_query> and </new_query> tags.
+
+    Parameters:
+        text (str): The input string containing the tags.
+
+    Returns:
+        str: Extracted text or None if no match is found.
+    """
+    # Regex pattern with grouping to capture the text between the tags
+    pattern = r"<new_query>(.*?)</new_query>"
+
+    # Search for the pattern and extract the first group if found
+    match = re.search(pattern, text)
+
+    # Return the captured group or the original text if no match
+    return match.group(1) if match else text
+
+
 async def process_chat_payload(form_data: dict, metadata, user):
     events, sources = [], []
 
@@ -422,12 +435,16 @@ async def process_chat_payload(form_data: dict, metadata, user):
 
     # Rewrite the query excluding the first query
     rewritten_query = user_message
-    if len(history) > 1:
-        rewritten_query = await model_service.rewrite_query(
-            current_query=user_message,
-            history=history
-        )
-        log.info(f'Rewritten query: {rewritten_query}')
+    if len(history) > 1 and user_message.strip().lower() != 'hi':
+        try:
+            rewritten_query = await client_service.rewrite_query_using_client(
+                query=user_message,
+                history=history
+            )
+            rewritten_query = extract_new_query(rewritten_query)
+            log.info(f'Rewritten query: {rewritten_query}')
+        except Exception as e:
+            log.error(f'Failed to rewrite user query due to {str(e)}. Falling back to the original user query.')
 
     # If custom knowledge is given, refrain from using RAG
     files = metadata.get('files', [])
@@ -441,7 +458,11 @@ async def process_chat_payload(form_data: dict, metadata, user):
             knowledge_count += 1
 
     # Based on the file types, determine the retrieval
-    use_rag = not knowledge_count or files_count
+    use_rag = True
+    if knowledge_count and files_count:
+        use_rag = True
+    elif knowledge_count:
+        use_rag = False
 
     if use_rag:
         # Get the index file from the DB
@@ -476,7 +497,8 @@ async def process_chat_payload(form_data: dict, metadata, user):
             header = header.group(1) if header else ''
 
             # Extract content after </header>
-            content = re.split(r'</header>', source, 1)[-1]
+            content = re.split(r'</header>', source, 1)[-1].strip()
+            header = header.strip()
 
             # Add to context
             context_string += f"<source><source_id>{source_idx}</source_id>"
@@ -499,6 +521,21 @@ async def process_chat_payload(form_data: dict, metadata, user):
     form_data["messages"] = history
 
     return form_data, metadata, events
+
+
+def extract_title_from_text(text):
+    # Use regex to find the dictionary in the text
+    match = re.search(r'\{.*\}', text)
+    if match:
+        dict_str = match.group(0)
+
+        # Convert the string to a dictionary using ast.literal_eval for safety
+        extracted_dict = ast.literal_eval(dict_str)
+
+        # Extract the title from the dictionary, default to "New Chat" if not found
+        return extracted_dict.get('title', "New Chat")
+
+    return "New Chat"
 
 
 async def process_chat_response(
@@ -548,8 +585,9 @@ async def process_chat_response(
                         if not value:
                             continue
 
-                        # Update the title
-                        title = value
+                        # Extract the chat title
+                        title = extract_title_from_text(value)
+
                     except Exception as ex:
                         log.error(f'Title generation exception: {str(ex)}')
 
