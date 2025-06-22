@@ -6,6 +6,7 @@ import numpy as np
 import torch
 from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer
+from tqdm import tqdm
 
 load_dotenv()
 
@@ -35,9 +36,13 @@ class EmbeddingService:
             - Processes sentences in batches to optimize memory usage.
         """
         embeddings = []  # List to store computed embeddings
-
+        total_embeddings = len(sentences)
         with torch.no_grad():  # Disable gradient computation for efficiency
-            for i in range(0, len(sentences), self.batch_size):
+            for i in tqdm(
+                    range(0, total_embeddings, self.batch_size),
+                    total=total_embeddings,
+                    desc="Generating embeddings"
+            ):
                 # Extract the current batch of sentences
                 batch = sentences[i:i + self.batch_size]
 

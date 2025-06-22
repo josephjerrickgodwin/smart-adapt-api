@@ -52,7 +52,7 @@ from src.service.env import (
 )
 from src.service.function_service import get_function_models
 from src.service.oauth_service import OAuthManager
-from src.service.sockets import (app as socket_app, periodic_usage_pool_cleanup)
+from src.service.sockets import (app as socket_app, periodic_usage_pool_cleanup, get_event_emitter)
 from src.service.utils.auth_service import (
     get_license_data,
     decode_token,
@@ -281,7 +281,7 @@ async def lifespan(fastapi_app: FastAPI):
     if fastapi_app.state.config.LICENSE_KEY:
         get_license_data(fastapi_app, fastapi_app.state.config.LICENSE_KEY)
 
-    asyncio.create_task(periodic_usage_pool_cleanup())
+    # asyncio.create_task(periodic_usage_pool_cleanup())
     yield
 
 
@@ -670,7 +670,7 @@ async def inspect_websocket(request: Request, call_next):
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=['*'],
+    allow_origins=['http://localhost:5173'],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -728,6 +728,7 @@ async def chat_completion(
     model = form_data.get("model", None)
     model_item = form_data.pop("model_item", {})
     tasks = form_data.pop("background_tasks", None)
+    event_emitter = None
     try:
         metadata = {
             "user_id": user.id,
@@ -744,10 +745,22 @@ async def chat_completion(
         request.state.metadata = metadata
         form_data["metadata"] = metadata
 
+        # Get the event emitter if available
+        if (
+                "session_id" in metadata
+                and metadata["session_id"]
+                and "chat_id" in metadata
+                and metadata["chat_id"]
+                and "message_id" in metadata
+                and metadata["message_id"]
+        ):
+            event_emitter = get_event_emitter(metadata)
+
         form_data, metadata, events = await process_chat_payload(
             form_data=form_data,
             metadata=metadata,
-            user=user
+            user=user,
+            event_emitter=event_emitter
         )
 
     except Exception as ex:
@@ -771,7 +784,8 @@ async def chat_completion(
             user=user,
             events=events,
             metadata=metadata,
-            tasks=tasks
+            tasks=tasks,
+            event_emitter=event_emitter
         )
     except Exception as ex:
         raise HTTPException(
@@ -838,16 +852,17 @@ async def get_app_config(request: Request):
     user = None
     if "token" in request.cookies:
         token = request.cookies.get("token")
-        try:
-            data = decode_token(token)
-        except Exception as e:
-            log.debug(e)
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid token",
-            )
-        if data is not None and "id" in data:
-            user = Users.get_user_by_id(data["id"])
+        if token is not None:
+            try:
+                data = decode_token(token)
+            except Exception as e:
+                log.debug(e)
+                raise HTTPException(
+                    status_code=status.HTTP_401_UNAUTHORIZED,
+                    detail="Invalid token",
+                )
+            if data is not None and "id" in data:
+                user = Users.get_user_by_id(data["id"])
 
     onboarding = False
     if user is None:
@@ -975,7 +990,9 @@ async def get_app_latest_release_version(user=Depends(get_verified_user)):
 
 @app.get("/api/changelog")
 async def get_app_changelog():
-    return {key: CHANGELOG[key] for idx, key in enumerate(CHANGELOG) if idx < 5}
+    # Only return the first 5 changelog entries by key order
+    keys = list(CHANGELOG.keys())
+    return {key: CHANGELOG[key] for key in keys[:5]}
 
 
 ############################
@@ -984,11 +1001,15 @@ async def get_app_changelog():
 
 # SessionMiddleware is used by authlib for oauth
 if len(OAUTH_PROVIDERS) > 0:
+    # Ensure same_site is a valid literal ('lax', 'strict', 'none')
+    same_site_value = WEBUI_SESSION_COOKIE_SAME_SITE.lower()
+    if same_site_value not in ("lax", "strict", "none"):
+        same_site_value = "lax"  # Default to 'lax' if invalid
     app.add_middleware(
         SessionMiddleware,
         secret_key=WEBUI_SECRET_KEY,
         session_cookie="oui-session",
-        same_site=WEBUI_SESSION_COOKIE_SAME_SITE,
+        same_site=same_site_value,
         https_only=WEBUI_SESSION_COOKIE_SECURE,
     )
 
@@ -1021,5 +1042,6 @@ if __name__ == "__main__":
         host="localhost",
         port=8080,
         reload=False,
-        log_level="debug"
+        log_level="debug",
+        timeout_keep_alive=330
     )

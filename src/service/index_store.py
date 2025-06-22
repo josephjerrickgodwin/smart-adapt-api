@@ -70,6 +70,17 @@ class IndexStore:
             del self.labels[session_id]
             del self.embeddings[session_id]
 
+    @classmethod
+    def normalize_l2_to_relevancy(cls, distance: float):
+        """
+        Converts L2 distance (smaller is better) to a relevancy score (0-1, higher is better).
+        Assumes max_distance is a reasonable upper bound for L2 distances in your data.
+        You might need to determine a good max_distance from your dataset,
+        or use a robust method like 1 / (1 + distance)
+        """
+        # Using 1 / (1 + distance) for robustness if max_distance is hard to define
+        return 1 / (1 + distance)
+
     async def search_by_top_k(
             self,
             query_embedding: np.ndarray,
@@ -89,10 +100,8 @@ class IndexStore:
             list: A list of dictionaries containing 'label', 'score', and optionally 'embeddings' keys.
 
         Raises:
-            ValueError:
-                If the query array is empty or not a valid NumPy array or the index does not exist.
-            Exception:
-                For any other errors encountered during the search process.
+            ValueError: If the query array is empty or not a valid NumPy array or the index does not exist.
+            Exception: For any other errors encountered during the search process.
         """
         if not self.indices.keys():
             raise ValueError('Index is not initialized!')
@@ -198,8 +207,16 @@ class IndexStore:
                 if distance == -1:
                     continue    # Skip is the distance is too long against the query
 
+                # Convert the distance into a score
+                distance_score = self.normalize_l2_to_relevancy(distance)
+
+                # Compute the cosine similarity score
                 embedding = torch.tensor(current_embeddings[idx], dtype=torch.float32).reshape(1, -1)
-                score = self.cos(query_embedding, embedding).item()
+                cosine_score = self.cos(query_embedding, embedding).item()
+
+                # Compute the average score
+                score = (distance_score + cosine_score) / 2.0
+
                 scores.append(score)
                 if return_embeddings:
                     results.append({

@@ -28,6 +28,8 @@ sio = socketio.AsyncServer(
     transports=(["websocket"] if ENABLE_WEBSOCKET_SUPPORT else ["polling"]),
     allow_upgrades=ENABLE_WEBSOCKET_SUPPORT,
     always_connect=True,
+    ping_interval=30,   # seconds, how often to send pings
+    ping_timeout=300,   # seconds, how long to wait before disconnect
 )
 
 

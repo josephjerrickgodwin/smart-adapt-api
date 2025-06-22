@@ -16,14 +16,13 @@ from starlette.responses import StreamingResponse
 from src.controller.chat_ui.task_controller import (
     generate_queries,
     generate_title,
-    generate_chat_tags,
 )
 from src.model.chats import Chats
 from src.model.constants import TASKS
 from src.model.users import UserModel
 from src.model.users import Users
+from src.service.agentic_rag_service import AgenticRAGService
 from src.service.chat_service import generate_chat_completion
-from src.service.client_service import client_service
 from src.service.env import (
     SRC_LOG_LEVELS,
     GLOBAL_LOG_LEVEL,
@@ -37,20 +36,18 @@ from src.service.sockets import (
 from src.service.utils.code_interpreter_service import execute_code_jupyter
 from src.service.utils.config_service import (
     DEFAULT_TOOLS_FUNCTION_CALLING_PROMPT_TEMPLATE,
-    DEFAULT_CODE_INTERPRETER_PROMPT, CODE_INTERPRETER_ENGINE, )
+    CODE_INTERPRETER_ENGINE, DEFAULT_RAG_TEMPLATE, )
 from src.service.utils.misc_service import (
     get_message_list,
     add_or_update_system_message,
-    add_or_update_user_message,
     get_last_user_message,
-    get_last_assistant_message,
+    get_last_assistant_message, add_user_message,
 )
 from src.service.utils.storage.storage_service import Storage
 from src.service.utils.storage.util_service import get_sources_from_files
 from src.service.utils.task_service import (
     create_task,
     get_task_model_id,
-    rag_template,
     tools_function_calling_generation_template,
 )
 from src.service.utils.webhook import post_webhook
@@ -124,9 +121,9 @@ async def chat_completion_tools_handler(
 
     try:
         response = await generate_chat_completion(request, form_data=payload, user=user)
-        log.debug(f"{response=}")
+        log.debug(f"{response}")
         content = await get_content_from_response(response)
-        log.debug(f"{content=}")
+        log.debug(f"{content}")
 
         if not content:
             return body, {}
@@ -426,27 +423,15 @@ def extract_new_query(text: str):
     return match.group(1) if match else text
 
 
-async def process_chat_payload(form_data: dict, metadata, user):
-    events, sources = [], []
+async def process_chat_payload(form_data: dict, metadata, user, event_emitter=None):
+    events = []
+    context = ''
 
     # Extract history from the form data
     history = form_data["messages"]
     user_message = get_last_user_message(history)
 
-    # Rewrite the query excluding the first query
-    rewritten_query = user_message
-    if len(history) > 1 and user_message.strip().lower() != 'hi':
-        try:
-            rewritten_query = await client_service.rewrite_query_using_client(
-                query=user_message,
-                history=history
-            )
-            rewritten_query = extract_new_query(rewritten_query)
-            log.info(f'Rewritten query: {rewritten_query}')
-        except Exception as e:
-            log.error(f'Failed to rewrite user query due to {str(e)}. Falling back to the original user query.')
-
-    # If custom knowledge is given, refrain from using RAG
+    # If custom knowledge is given, refrain from using agentic RAG
     files = metadata.get('files', [])
     files = files if files else []
     knowledge_count, files_count = 0, 0
@@ -458,64 +443,80 @@ async def process_chat_payload(form_data: dict, metadata, user):
             knowledge_count += 1
 
     # Based on the file types, determine the retrieval
-    use_rag = True
+    use_agentic_rag = True
     if knowledge_count and files_count:
-        use_rag = True
+        use_agentic_rag = True
     elif knowledge_count:
-        use_rag = False
+        use_agentic_rag = False
 
-    if use_rag:
-        # Get the index file from the DB
-        log.info("Started fetching the existing index")
+    rag_service = None
+    if use_agentic_rag:
+        try:
+            # Get the index file from the DB
+            log.info("Started fetching the existing index for agentic RAG")
 
-        # Format the index file name
-        index_filename = f'{user.id}__index.pkl'
+            # Format the index file name
+            index_filename = f'{user.id}__index.pkl'
 
-        # Check if an index is available for the user
-        rag_service = Storage.get_file(index_filename)
+            # Check if an index is available for the user
+            rag_service = Storage.get_file(index_filename)
+            if rag_service:
+                log.info("Initializing agentic RAG service")
+                agentic_rag_service = AgenticRAGService(rag_service)
 
-        # Start search
-        if rag_service:
-            log.info(f"Started querying the vector store")
-            sources = await rag_service.search(query=rewritten_query)
-            log.info(f'Received a total of {len(sources)} context')
+                # Process with agentic RAG, pass event_emitter
+                use_rag, memory = await agentic_rag_service.process_agentic_rag(
+                    history=history,
+                    query=user_message or "",
+                    event_emitter=event_emitter
+                )
+                if use_rag and memory:
+                    context = memory.context.strip()
+                    log.info(
+                        f'Agentic RAG retrieved {len(memory.sources)} context items across '
+                        f'{memory.sources[-1]["iteration"] if memory.sources else 0} iterations'
+                    )
+                else:
+                    log.info("Agentic RAG determined RAG was not needed for this query")
+            else:
+                log.warning("No RAG index found for agentic RAG processing")
 
-    features = form_data.pop("features", {})
-    if features:
-        if "code_interpreter" in features and features["code_interpreter"]:
-            form_data["messages"] = add_or_update_user_message(
-                DEFAULT_CODE_INTERPRETER_PROMPT, form_data["messages"],
-            )
+        except Exception as e:
+            log.error(f"Error in agentic RAG processing: {e}")
 
-    if sources:
-        context_string = ""
-        for source_idx, source in enumerate(sources):
-            source = source['label']
+            # Fallback to traditional RAG if agentic RAG fails
+            log.info("Falling back to traditional RAG")
+            try:
+                if rag_service:
+                    sources = await rag_service.search(query=user_message)
+                    for source in sources:
+                        context += f"\n{source['label']}".strip()
+                    log.info(f'Traditional RAG fallback retrieved {len(sources)} context items')
+            except Exception as fallback_error:
+                log.error(f"Traditional RAG fallback also failed: {fallback_error}")
 
-            # Extract content between <header> and </header>
-            header = re.search(r'<header>(.*?)</header>', source, re.DOTALL)
-            header = header.group(1) if header else ''
+    if event_emitter:
+        await event_emitter({
+            "type": "status",
+            "data": {
+                "action": "thinking",
+                "description": f"Finalizing the result",
+                "done": True
+            }
+        })
 
-            # Extract content after </header>
-            content = re.split(r'</header>', source, 1)[-1].strip()
-            header = header.strip()
+    # Always ensure the system message is present and up to date
+    history = add_or_update_system_message(
+        content=DEFAULT_RAG_TEMPLATE,
+        messages=history,
+    )
 
-            # Add to context
-            context_string += f"<source><source_id>{source_idx}</source_id>"
-            if header:
-                context_string += f"<source_metadata>{header}</source_metadata>"
-            context_string += f"<source_context>{content}</source_context></source>\n\n"
-
-        context_string = context_string.strip()
-        formatted_content = rag_template(
-            template='',
-            context=context_string,
-            query=user_message
-        )
-        history = add_or_update_system_message(
-            content=formatted_content,
-            messages=history,
-        )
+    # Implement the user message (with or without context)
+    history = add_user_message(
+        content=user_message or "",
+        messages=history,
+        context=context.strip() if context else ""
+    )
 
     # Update messages
     form_data["messages"] = history
@@ -525,7 +526,7 @@ async def process_chat_payload(form_data: dict, metadata, user):
 
 def extract_title_from_text(text):
     # Use regex to find the dictionary in the text
-    match = re.search(r'\{.*\}', text)
+    match = re.search(r'\{.*}', text)
     if match:
         dict_str = match.group(0)
 
@@ -539,7 +540,7 @@ def extract_title_from_text(text):
 
 
 async def process_chat_response(
-        request, response, form_data, user, events, metadata, tasks
+        request, response, form_data, user, events, metadata, tasks, event_emitter=None
 ):
     async def background_tasks_handler():
         message_map = Chats.get_messages_by_chat_id(metadata["chat_id"])
@@ -575,6 +576,10 @@ async def process_chat_response(
                     # Remove the prefix
                     _data = _data[len("data:"):].strip()
 
+                    # Check for the DONE token
+                    if _data == '[DONE]':
+                        continue
+
                     try:
                         _data = json.loads(_data)
                         choices = _data.get("choices", [])
@@ -599,46 +604,46 @@ async def process_chat_response(
                 Chats.update_chat_title_by_id(metadata["chat_id"], title)
                 await event_emitter({"type": "chat:title", "data": message.get("content", "New Chat")})
 
-        if TASKS.TAGS_GENERATION in tasks and tasks[TASKS.TAGS_GENERATION]:
-            res = await generate_chat_tags(
-                request,
-                {
-                    "model": message["model"],
-                    "messages": messages,
-                    "chat_id": metadata["chat_id"],
-                },
-                user,
-            )
-
-            tags = ""
-            async for line in res.body_iterator:
-                line = line.decode("utf-8") if isinstance(line, bytes) else line
-
-                # Skip empty lines and events that are not formatted
-                if not line.strip() or not line.startswith("data:"):
-                    continue
-                _data = line
-
-                # Remove the prefix
-                _data = _data[len("data:"):].strip()
-
-                try:
-                    _data = json.loads(_data)
-                    choices = _data.get("choices", [])
-                    if not choices:
-                        continue
-
-                    value = choices[0].get("delta", {}).get("content", '')
-                    if not value:
-                        continue
-
-                    # Update the title
-                    tags = value[value.find("{"): value.rfind("}") + 1]
-                except Exception as ex:
-                    log.error(f'Tag generation exception: {str(ex)}')
-
-            Chats.update_chat_tags_by_id(metadata["chat_id"], tags, user)
-            await event_emitter({"type": "chat:tags", "data": tags})
+        # if TASKS.TAGS_GENERATION in tasks and tasks[TASKS.TAGS_GENERATION]:
+        #     res = await generate_chat_tags(
+        #         request,
+        #         {
+        #             "model": message["model"],
+        #             "messages": messages,
+        #             "chat_id": metadata["chat_id"],
+        #         },
+        #         user,
+        #     )
+        #
+        #     tags = ""
+        #     async for line in res.body_iterator:
+        #         line = line.decode("utf-8") if isinstance(line, bytes) else line
+        #
+        #         # Skip empty lines and events that are not formatted
+        #         if not line.strip() or not line.startswith("data:"):
+        #             continue
+        #         _data = line
+        #
+        #         # Remove the prefix
+        #         _data = _data[len("data:"):].strip()
+        #
+        #         try:
+        #             _data = json.loads(_data)
+        #             choices = _data.get("choices", [])
+        #             if not choices:
+        #                 continue
+        #
+        #             value = choices[0].get("delta", {}).get("content", '')
+        #             if not value:
+        #                 continue
+        #
+        #             # Update the title
+        #             tags = value[value.find("{"): value.rfind("}") + 1]
+        #         except Exception as ex:
+        #             log.error(f'Tag generation exception: {str(ex)}')
+        #
+        #     Chats.update_chat_tags_by_id(metadata["chat_id"], tags, user)
+        #     await event_emitter({"type": "chat:tags", "data": tags})
 
     def split_content_and_whitespace(content):
         content_stripped = content.rstrip()
@@ -1032,7 +1037,7 @@ async def process_chat_response(
                         break
 
             title = Chats.get_chat_title_by_id(metadata["chat_id"])
-            data = {"done": True, "content": serialize_content_blocks(content_blocks), "title": title }
+            data = {"done": True, "content": serialize_content_blocks(content_blocks), "title": title}
             if not ENABLE_REALTIME_CHAT_SAVE:
                 # Save message in the database
                 Chats.upsert_message_to_chat_by_id_and_message_id(
@@ -1067,7 +1072,6 @@ async def process_chat_response(
         if response.background is not None:
             await response.background()
 
-    event_emitter = None
     event_caller = None
     if (
             "session_id" in metadata
@@ -1077,7 +1081,8 @@ async def process_chat_response(
             and "message_id" in metadata
             and metadata["message_id"]
     ):
-        event_emitter = get_event_emitter(metadata)
+        if event_caller is None:
+            event_emitter = get_event_emitter(metadata)
         event_caller = get_event_call(metadata)
 
     # Streaming response

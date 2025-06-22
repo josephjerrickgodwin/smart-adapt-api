@@ -2,7 +2,6 @@ import asyncio
 import logging
 import math
 import re
-import uuid
 from datetime import datetime
 from typing import Dict
 from typing import Optional
@@ -157,7 +156,7 @@ def replace_prompt_variable(template: str, prompt: str) -> str:
 
 
 def replace_messages_variable(
-    template: str, messages: Optional[list[str]] = None
+    template: str, messages: Optional[list[dict]] = None
 ) -> str:
     def replacement_function(match):
         full_match = match.group(0)
@@ -198,12 +197,11 @@ def replace_messages_variable(
     return template
 
 
-# {{prompt:middletruncate:8000}}
 
 
-def rag_template(template: str, context: str, query: str):
-    if template.strip() == "":
-        template = DEFAULT_RAG_TEMPLATE
+
+def rag_template(context: str, query: str):
+    template = DEFAULT_RAG_TEMPLATE
 
     if "[context]" not in template and "{{CONTEXT}}" not in template:
         log.debug(
@@ -217,24 +215,8 @@ def rag_template(template: str, context: str, query: str):
             "nothing, or the user might be trying to hack something."
         )
 
-    query_placeholders = []
-    if "[query]" in context:
-        query_placeholder = "{{QUERY" + str(uuid.uuid4()) + "}}"
-        template = template.replace("[query]", query_placeholder)
-        query_placeholders.append(query_placeholder)
-
-    if "{{QUERY}}" in context:
-        query_placeholder = "{{QUERY" + str(uuid.uuid4()) + "}}"
-        template = template.replace("{{QUERY}}", query_placeholder)
-        query_placeholders.append(query_placeholder)
-
-    template = template.replace("[context]", context)
     template = template.replace("{{CONTEXT}}", context)
-    template = template.replace("[query]", query)
     template = template.replace("{{QUERY}}", query)
-
-    for query_placeholder in query_placeholders:
-        template = template.replace(query_placeholder, query)
 
     return template
 
@@ -243,6 +225,8 @@ def title_generation_template(
     template: str, messages: list[dict], user: Optional[dict] = None
 ) -> str:
     prompt = get_last_user_message(messages)
+    if prompt is None:
+        prompt = ""
     template = replace_prompt_variable(template, prompt)
     template = replace_messages_variable(template, messages)
 
@@ -262,6 +246,8 @@ def tags_generation_template(
     template: str, messages: list[dict], user: Optional[dict] = None
 ) -> str:
     prompt = get_last_user_message(messages)
+    if prompt is None:
+        prompt = ""
     template = replace_prompt_variable(template, prompt)
     template = replace_messages_variable(template, messages)
 
@@ -280,6 +266,8 @@ def image_prompt_generation_template(
     template: str, messages: list[dict], user: Optional[dict] = None
 ) -> str:
     prompt = get_last_user_message(messages)
+    if prompt is None:
+        prompt = ""
     template = replace_prompt_variable(template, prompt)
     template = replace_messages_variable(template, messages)
 
@@ -334,6 +322,8 @@ def query_generation_template(
     template: str, messages: list[dict], user: Optional[dict] = None
 ) -> str:
     prompt = get_last_user_message(messages)
+    if prompt is None:
+        prompt = ""
     template = replace_prompt_variable(template, prompt)
     template = replace_messages_variable(template, messages)
 
@@ -378,10 +368,10 @@ def moa_response_generation_template(
         template,
     )
 
-    responses = [f'"""{response}"""' for response in responses]
-    responses = "\n\n".join(responses)
+    responses_text = [f'"""{response}"""' for response in responses]
+    responses_joined = "\n\n".join(responses_text)
 
-    template = template.replace("{{responses}}", responses)
+    template = template.replace("{{responses}}", responses_joined)
     return template
 
 

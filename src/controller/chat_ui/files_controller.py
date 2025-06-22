@@ -8,7 +8,6 @@ from pathlib import Path
 from typing import Optional
 from urllib.parse import quote
 
-import ftfy
 from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile, status
 from fastapi.responses import FileResponse
 
@@ -20,7 +19,6 @@ from src.model.files import (
 )
 from src.service.embedding_service import embedding_service
 from src.service.env import SRC_LOG_LEVELS
-from src.service.fine_tuning.data_preprocessor import data_preprocessor
 from src.service.rag_service import RAGService
 from src.service.utils.auth_service import get_admin_user, get_verified_user
 from src.service.utils.storage.document_loader import Loader
@@ -32,21 +30,35 @@ log.setLevel(SRC_LOG_LEVELS["MODELS"])
 router = APIRouter(prefix="/api/v1/files", tags=["files"])
 
 
-############################
-# Upload File
-############################
-
 @router.post("/", response_model=FileModelResponse)
 async def upload_file(
         request: Request,
         session_id: str,
         file: UploadFile = File(...),
         user=Depends(get_verified_user)
-):
+) -> FileModelResponse:
+    """
+    Handles file upload, content extraction, preprocessing, and vector store indexing for a user session.
+
+    Uploads the file, extracts and preprocesses its content, generates embeddings, and updates or creates a RAGService index.
+    Serializes and stores the updated index, and returns file metadata in the response.
+
+    Args:
+        request (Request): FastAPI request object.
+        session_id (str): Session identifier for the vector store.
+        file (UploadFile): File to be uploaded and processed.
+        user: Authenticated user, injected via dependency.
+
+    Returns:
+        FileModelResponse: Metadata and status of the uploaded file.
+
+    Raises:
+        HTTPException: If any error occurs during processing or storage.
+    """
     log.info(f"file.content_type: {file.content_type}")
     try:
         created_at = int(time.time())
-        un_sanitized_filename = file.filename
+        un_sanitized_filename = file.filename if file.filename else f"uploaded_{uuid.uuid4()}"
         filename = os.path.basename(un_sanitized_filename)
 
         # Replace filename with uuid
@@ -57,69 +69,51 @@ async def upload_file(
         # Upload the fie (temporarily)
         _, file_path = Storage.upload_file(file.file, temp_filename)
 
-        # Initialize the document loader
-        loader = Loader(
-            engine=request.app.state.config.CONTENT_EXTRACTION_ENGINE,
-            TIKA_SERVER_URL=request.app.state.config.TIKA_SERVER_URL,
-            PDF_EXTRACT_IMAGES=request.app.state.config.PDF_EXTRACT_IMAGES,
-        )
-        docs = loader.get_loader(
+        # Initialize the document loader and chunk the file contents
+        loader = Loader()
+        documents = loader.load_and_extract(
             filename=filename,
-            file_content_type=file.content_type,
             file_path=file_path
-        ).load()
+        )
 
         # Clear the temporary file
         Storage.delete_file(temp_filename)
 
-        # Pre-process the data
-        documents = []
-        for doc in docs:
-            # Fix any inconsistencies
-            contents = ftfy.fix_text(doc.page_content)
-
-            # Pre-process the data
-            processed_data = data_preprocessor.preprocess_text(contents)
-
-            # Extract the metadata
-            metadata = doc.metadata
-
-            # Extract the page number
-            page_number = metadata.get('page', 0)
-
-            # Add metadata to each chunk
-            processed_chunks = [
-                f'<header>\nfile name: {file.filename}\nPage: {page_number}</header>\n{chunk}'
-                for chunk in processed_data
-            ]
-
-            # Update the documents for indexing
-            documents.extend(processed_chunks)
-
         # Check for an existing index store for the current session
         rag_service = Storage.get_file(data_filename)
-        if rag_service:
+        if isinstance(rag_service, RAGService):
             # Generate embeddings for the new data
             log.info("Generating embeddings for the data")
             embeddings = await embedding_service.get_embeddings(documents)
 
             # Get the existing hyperparameters
             hyperparameters = rag_service.get_optimal_hyperparameters()
+            if (
+                rag_service.index_store is not None and
+                hyperparameters['ef_construction'] is not None and
+                hyperparameters['ef_search'] is not None and
+                hyperparameters['m'] is not None
+            ):
+                # Initialize a new session (If not already exist)
+                await rag_service.index_store.create_session_for_index(
+                    session_id=session_id,
+                    ef_construction=hyperparameters['ef_construction'],
+                    ef_search=hyperparameters['ef_search'],
+                    m=hyperparameters['m']
+                )
 
-            # Initialize a new session (If not already exist)
-            await rag_service.index_store.create_session_for_index(
-                session_id=session_id,
-                ef_construction=hyperparameters['ef_construction'],
-                ef_search=hyperparameters['ef_search'],
-                m=hyperparameters['m']
-            )
-
-            # Add new data to the index
-            await rag_service.index_store.add_index(
-                session_id=session_id,
-                vectors=embeddings,
-                labels=documents
-            )
+                # Add new data to the index
+                await rag_service.index_store.add_index(
+                    session_id=session_id,
+                    vectors=embeddings,
+                    labels=documents
+                )
+            else:
+                log.error("RAGService index_store or hyperparameters are not properly initialized.")
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail="RAGService index_store or hyperparameters are not properly initialized."
+                )
 
             # Remove the existing index store from the storage
             Storage.delete_file(data_filename)
@@ -165,8 +159,7 @@ async def upload_file(
             filename=filename,
             meta=meta,
             created_at=created_at,
-            updated_at=updated_at,
-            model_config={}
+            updated_at=updated_at
         )
         return file_item
 
@@ -264,7 +257,7 @@ async def get_file_content_by_id(id: str, user=Depends(get_verified_user)):
     file = Files.get_file_by_id(id)
     if file and (file.user_id == user.id or user.role == "admin"):
         try:
-            file_path = Storage.get_file(file.path)
+            file_path = Storage.get_file(file.path or '')
             file_path = Path(file_path)
 
             # Check if the file already exists in the cache
