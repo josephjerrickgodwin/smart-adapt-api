@@ -6,6 +6,8 @@ from typing import Literal
 import aiohttp
 from dotenv import load_dotenv
 
+from src.service.llm.hf_client import hf_client
+
 load_dotenv()
 
 logger = logging.getLogger(__name__)
@@ -98,23 +100,26 @@ class ClientService:
         if knowledge_ids:
             request_body['knowledge_ids'] = knowledge_ids
 
+        for chunk in hf_client.stream(messages=messages, stream=stream):
+            yield chunk
+
         # Send the payload
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                    url=self.chat_completions_endpoint,
-                    headers={
-                        **self.default_header,
-                        **self.json_headers
-                    },
-                    json=request_body,
-                    timeout=None
-            ) as response:
-                if response.status == 200:
-                    async for chunk in response.content.iter_chunked(1024):
-                        chunk = chunk.decode('utf-8', errors='ignore')
-                        yield chunk
-                else:
-                    response.raise_for_status()
+        # async with aiohttp.ClientSession() as session:
+        #     async with session.post(
+        #             url=self.chat_completions_endpoint,
+        #             headers={
+        #                 **self.default_header,
+        #                 **self.json_headers
+        #             },
+        #             json=request_body,
+        #             timeout=None
+        #     ) as response:
+        #         if response.status == 200:
+        #             async for chunk in response.content.iter_chunked(1024):
+        #                 chunk = chunk.decode('utf-8', errors='ignore')
+        #                 yield chunk
+        #         else:
+        #             response.raise_for_status()
 
     async def fine_tuning_using_client(
             self,

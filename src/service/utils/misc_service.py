@@ -103,10 +103,6 @@ def remove_system_message(messages: list[dict]) -> list[dict]:
     return [message for message in messages if message["role"] != "system"]
 
 
-def pop_system_message(messages: list[dict]) -> tuple[Optional[dict], list[dict]]:
-    return get_system_message(messages), remove_system_message(messages)
-
-
 def prepend_to_first_user_message_content(
     content: str, messages: list[dict]
 ) -> list[dict]:
@@ -127,7 +123,7 @@ def add_or_update_system_message(content: str, messages: list[dict]):
     Adds a new system message at the beginning of the messages list
     or updates the existing system message at the beginning.
 
-    :param msg: The message to be added or appended.
+    :param content: The message to be added or appended.
     :param messages: The list of message dictionaries.
     :return: The updated list of message dictionaries.
     """
@@ -138,6 +134,19 @@ def add_or_update_system_message(content: str, messages: list[dict]):
         # Insert at the beginning
         messages.insert(0, {"role": "system", "content": content})
 
+    return messages
+
+
+def add_user_message(content: str, messages: list[dict], context: str = None):
+    if context is None or not context:
+        return messages
+
+    # Apply the user query and the context at the last index
+    user_message = f"<context>\n{context}</context>\n"
+    user_message += f"<user_query>\n{content}\n</user_query>"
+
+    # Replace the last message with the modified message
+    messages[-1]['content'] = user_message
     return messages
 
 
@@ -156,25 +165,6 @@ def add_or_update_user_message(content: str, messages: list[dict]):
     else:
         # Insert at the end
         messages.append({"role": "user", "content": content})
-
-    return messages
-
-
-def append_or_update_assistant_message(content: str, messages: list[dict]):
-    """
-    Adds a new assistant message at the end of the messages list
-    or updates the existing assistant message at the end.
-
-    :param msg: The message to be added or appended.
-    :param messages: The list of message dictionaries.
-    :return: The updated list of message dictionaries.
-    """
-
-    if messages and messages[-1].get("role") == "assistant":
-        messages[-1]["content"] = f"{messages[-1]['content']}\n{content}"
-    else:
-        # Insert at the end
-        messages.append({"role": "assistant", "content": content})
 
     return messages
 
