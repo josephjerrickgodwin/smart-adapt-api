@@ -9,6 +9,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Optional
 from uuid import uuid4
+from datetime import datetime
 
 from fastapi import Request
 from starlette.responses import StreamingResponse
@@ -451,6 +452,8 @@ async def process_chat_payload(form_data: dict, metadata, user, event_emitter=No
 
     rag_service = None
     if use_agentic_rag:
+        start_time = datetime.now()
+
         try:
             # Get the index file from the DB
             log.info("Started fetching the existing index for agentic RAG")
@@ -495,15 +498,28 @@ async def process_chat_payload(form_data: dict, metadata, user, event_emitter=No
             except Exception as fallback_error:
                 log.error(f"Traditional RAG fallback also failed: {fallback_error}")
 
-    if event_emitter:
-        await event_emitter({
-            "type": "status",
-            "data": {
-                "action": "thinking",
-                "description": f"Finalizing the result",
-                "done": True
-            }
-        })
+        # Calculate the time taken to process the RAG
+        end_time = datetime.now()
+        time_taken = (end_time - start_time).total_seconds()
+        minutes, seconds = divmod(time_taken, 60)
+        minutes = int(minutes)
+        seconds = int(seconds)
+
+        # Formulate the final thought message
+        minutes_message = f"{minutes} {'minutes' if minutes > 1 else 'minute'}"
+        seconds_message = f"{seconds} {'seconds' if seconds > 1 else 'second'}"
+        final_thought_message = f"{minutes_message} and {seconds_message}"
+
+        log.info(f"Time taken to process the RAG: {final_thought_message}")
+        if event_emitter:
+            await event_emitter({
+                "type": "status",
+                "data": {
+                    "action": "thinking",
+                    "description": f"Thought for {final_thought_message}",
+                    "done": True
+                }
+            })
 
     # Always ensure the system message is present and up to date
     history = add_or_update_system_message(

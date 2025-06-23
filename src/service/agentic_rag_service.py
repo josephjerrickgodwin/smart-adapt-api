@@ -50,7 +50,7 @@ class AgenticRAGService:
     
     def __init__(self, rag_service: RAGService):
         self.rag_service = rag_service
-        self.max_iterations = 3
+        self.max_iterations = 2
         self.confidence_threshold = 0.7
         self.sufficiency_threshold = 0.8
         self.max_top_k = 20  # Maximum number of results to retrieve
@@ -184,6 +184,9 @@ class AgenticRAGService:
         
         while iteration < self.max_iterations:
             iteration += 1
+
+            # Calculate the progress
+            progress = int((iteration / self.max_iterations) * 100)
             
             if event_emitter:
                 try:
@@ -191,7 +194,7 @@ class AgenticRAGService:
                         "type": "status",
                         "data": {
                             "action": "thinking",
-                            "description": f"Step {iteration}: Examining the question",
+                            "description": f"Examining the question - {progress}%",
                             "done": False
                         }
                     })
@@ -212,7 +215,7 @@ class AgenticRAGService:
                         "type": "status",
                         "data": {
                             "action": "thinking",
-                            "description": f"Step {iteration}: Building a search strategy",
+                            "description": f"Building a search strategy - {progress}%",
                             "done": False
                         }
                     })
@@ -232,43 +235,19 @@ class AgenticRAGService:
                 )
             except Exception as e:
                 log.error(f"Failed to decide search strategy in iteration {iteration}: {e}")
+
                 # Fallback strategy
                 search_strategy = SearchStrategy(
                     query=rewritten_query,
                     top_k=5,
                     reasoning=f"Fallback strategy due to error: {str(e)}"
                 )
-            
-            if event_emitter:
-                try:
-                    await event_emitter({
-                        "type": "status",
-                        "data": {
-                            "action": "thinking",
-                            "description": f"Step {iteration}: Searching with query '{search_strategy.query[:50]}...'",
-                            "done": False
-                        }
-                    })
-                except Exception as e:
-                    log.error(f"Failed to emit status event in iteration {iteration}: {e}")
-                    
+
             log.info(f"Iteration {iteration} strategy: query='{search_strategy.query}', top_k={search_strategy.top_k}")
             log.info(f"Strategy reasoning: {search_strategy.reasoning}")
             
             # Check if this query has been used before
             if search_strategy.query in previous_queries:
-                if event_emitter:
-                    try:
-                        await event_emitter({
-                            "type": "status",
-                            "data": {
-                                "action": "thinking",
-                                "description": f"Step {iteration}: Deciding on an alternative search approach",
-                                "done": False
-                            }
-                        })
-                    except Exception as e:
-                        log.error(f"Failed to emit status event in iteration {iteration}: {e}")
                 log.warning(f"Query '{search_strategy.query}' already used, skipping iteration {iteration}")
                 break
             
@@ -287,18 +266,6 @@ class AgenticRAGService:
                 search_results = []
 
             if not search_results:
-                if event_emitter:
-                    try:
-                        await event_emitter({
-                            "type": "status",
-                            "data": {
-                                "action": "thinking",
-                                "description": f"Step {iteration}: No search results found",
-                                "done": False
-                            }
-                        })
-                    except Exception as e:
-                        log.error(f"Failed to emit status event in iteration {iteration}: {e}")
                 log.warning(f"No search results found in iteration {iteration}")
                 break
             
@@ -327,7 +294,7 @@ class AgenticRAGService:
                         "type": "status",
                         "data": {
                             "action": "thinking",
-                            "description": f"Step {iteration}: Examining the information",
+                            "description": f"Thinking about a solution - {progress}%",
                             "done": False
                         }
                     })
@@ -349,7 +316,7 @@ class AgenticRAGService:
                             "type": "status",
                             "data": {
                                 "action": "thinking",
-                                "description": f"Step {iteration}: A decision has been made",
+                                "description": f"A decision has been made",
                                 "done": False
                             }
                         })
@@ -365,7 +332,7 @@ class AgenticRAGService:
                     "type": "status",
                     "data": {
                         "action": "thinking",
-                        "description": "Final touches",
+                        "description": "Crafting a solution",
                         "done": False
                     }
                 })
@@ -425,20 +392,6 @@ class AgenticRAGService:
             log.error(f"Failed to rewrite query: {e}")
             rewritten_query = query  # Fallback to original query
 
-        # Step 1: Decide whether to use RAG
-        if event_emitter:
-            try:
-                await event_emitter({
-                    "type": "status",
-                    "data": {
-                        "action": "thinking",
-                        "description": "Deciding whether to retrieve additional information",
-                        "done": False
-                    }
-                })
-            except Exception as e:
-                log.error(f"Failed to emit decision status event: {e}")
-
         # Step 2: Decide whether to use RAG
         try:
             decision = await self.decide_rag_usage(history, rewritten_query)
@@ -453,18 +406,6 @@ class AgenticRAGService:
         
         if not decision.use_rag:
             log.info(f"RAG not needed for query: {query[:100]}...")
-            if event_emitter:
-                try:
-                    await event_emitter({
-                        "type": "status",
-                        "data": {
-                            "action": "thinking",
-                            "description": "No additional information needed",
-                            "done": False
-                        }
-                    })
-                except Exception as e:
-                    log.error(f"Failed to emit no-RAG status event: {e}")
             return False, None
         
         # Step 3: Build memory through iterative searches
@@ -475,7 +416,7 @@ class AgenticRAGService:
                     "type": "status",
                     "data": {
                         "action": "thinking",
-                        "description": "Thinking",
+                        "description": "Diving deep into the question",
                         "done": False
                     }
                 })
@@ -486,6 +427,7 @@ class AgenticRAGService:
             memory = await self.build_memory(query, history, event_emitter=event_emitter)
         except Exception as e:
             log.error(f"Failed to build memory: {e}")
+
             # Return a minimal memory object to prevent complete failure
             memory = RAGMemory(
                 context="",
@@ -583,7 +525,8 @@ class AgenticRAGService:
         query_lower = query.lower()
         return any(keyword in query_lower for keyword in rag_keywords)
 
-    def _extract_context_from_results(self, results: List[Dict[str, Any]]) -> str:
+    @staticmethod
+    def _extract_context_from_results(results: List[Dict[str, Any]]) -> str:
         """Extract and format context from search results."""
         context_parts = []
         for i, result in enumerate(results, 1):

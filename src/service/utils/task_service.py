@@ -179,6 +179,7 @@ def replace_messages_variable(
 
             if len(messages) <= mid:
                 return get_messages_content(messages)
+
             # Handle middle truncation: split to get start and end portions of the messages list
             half = mid // 2
             start_msgs = messages[:half]
@@ -302,10 +303,12 @@ def autocomplete_generation_template(
     template: str,
     prompt: str,
     messages: Optional[list[dict]] = None,
+    context: Optional[str] = None,
     type: Optional[str] = None,
     user: Optional[dict] = None,
 ) -> str:
     template = template.replace("{{TYPE}}", type if type else "")
+    template = template.replace("{{INFO}}", context if context else "")
     template = replace_prompt_variable(template, prompt)
     template = replace_messages_variable(template, messages)
     return prompt_template(

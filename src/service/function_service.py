@@ -12,7 +12,7 @@ from src.model.functions import Functions
 from src.service.client_service import client_service
 from src.service.env import SRC_LOG_LEVELS, GLOBAL_LOG_LEVEL
 from src.service.utils.misc_service import (
-    openai_chat_chunk_message_template,
+    openai_chat_chunk_message_template, openai_chat_completion_message_template,
 )
 from src.service.utils.payload_service import (
     apply_model_system_prompt_to_body,
@@ -145,3 +145,19 @@ async def generate_function_chat_completion(
             return
 
     return StreamingResponse(stream_content(), media_type="text/event-stream")
+
+
+async def generate_auto_completions(
+        messages, model, user
+):
+    try:
+        async for message in client_service.start_completions_using_client(
+                user_id=user.id,
+                messages=messages,
+                stream=False
+        ):
+            return openai_chat_completion_message_template(model, message)
+
+    except Exception as e:
+        log.error(f"Error while generating auto-completion: {e}")
+        return {'error': {'detail': str(e)}}

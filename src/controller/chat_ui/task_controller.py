@@ -9,21 +9,21 @@ from pydantic import BaseModel
 from src.model.constants import TASKS
 from src.service.chat_service import generate_chat_completion
 from src.service.env import SRC_LOG_LEVELS
+from src.service.function_service import generate_auto_completions
 from src.service.utils.auth_service import get_admin_user, get_verified_user
 from src.service.utils.config_service import (
     DEFAULT_TITLE_GENERATION_PROMPT_TEMPLATE,
     DEFAULT_TAGS_GENERATION_PROMPT_TEMPLATE,
-    DEFAULT_IMAGE_PROMPT_GENERATION_PROMPT_TEMPLATE,
     DEFAULT_QUERY_GENERATION_PROMPT_TEMPLATE,
     DEFAULT_AUTOCOMPLETE_GENERATION_PROMPT_TEMPLATE,
     DEFAULT_EMOJI_GENERATION_PROMPT_TEMPLATE,
     DEFAULT_MOA_GENERATION_PROMPT_TEMPLATE, ENABLE_TITLE_GENERATION,
 )
+from src.service.utils.storage.storage_service import Storage
 from src.service.utils.task_service import get_task_model_id
 from src.service.utils.task_service import (
     title_generation_template,
     query_generation_template,
-    image_prompt_generation_template,
     autocomplete_generation_template,
     tags_generation_template,
     emoji_generation_template,
@@ -156,7 +156,7 @@ async def generate_title(
     # Remove reasoning details from the messages
     for message in messages:
         message["content"] = re.sub(
-            r"<details\s+type=\"reasoning\"[^>]*>.*?<\/details>",
+            r"<details\s+type=\"reasoning\"[^>]*>.*?</details>",
             "",
             message["content"],
             flags=re.S,
@@ -240,72 +240,6 @@ async def generate_chat_tags(
         )
 
 
-@router.post("/image_prompt/completions")
-async def generate_image_prompt(
-    request: Request, form_data: dict, user=Depends(get_verified_user)
-):
-    if getattr(request.state, "direct", False) and hasattr(request.state, "model"):
-        models = {
-            request.state.model["id"]: request.state.model,
-        }
-    else:
-        models = request.app.state.MODELS
-
-    model_id = form_data["model"]
-    if model_id not in models:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Model not found",
-        )
-
-    # Check if the user has a custom task model
-    # If the user has a custom task model, use that model
-    task_model_id = get_task_model_id(
-        model_id,
-        request.app.state.config.TASK_MODEL,
-        request.app.state.config.TASK_MODEL_EXTERNAL,
-        models,
-    )
-
-    log.debug(
-        f"generating image prompt using model {task_model_id} for user {user.email} "
-    )
-
-    if request.app.state.config.IMAGE_PROMPT_GENERATION_PROMPT_TEMPLATE != "":
-        template = request.app.state.config.IMAGE_PROMPT_GENERATION_PROMPT_TEMPLATE
-    else:
-        template = DEFAULT_IMAGE_PROMPT_GENERATION_PROMPT_TEMPLATE
-
-    content = image_prompt_generation_template(
-        template,
-        form_data["messages"],
-        user={
-            "name": user.name,
-        },
-    )
-
-    payload = {
-        "model": task_model_id,
-        "messages": [{"role": "user", "content": content}],
-        "stream": False,
-        "metadata": {
-            **(request.state.metadata if hasattr(request.state, "metadata") else {}),
-            "task": str(TASKS.IMAGE_PROMPT_GENERATION),
-            "task_body": form_data,
-            "chat_id": form_data.get("chat_id", None),
-        },
-    }
-
-    try:
-        return await generate_chat_completion(request, form_data=payload, user=user)
-    except Exception as e:
-        log.error("Exception occurred", exc_info=True)
-        return JSONResponse(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            content={"detail": "An internal error has occurred."},
-        )
-
-
 @router.post("/queries/completions")
 async def generate_queries(
     request: Request, form_data: dict, user=Depends(get_verified_user)
@@ -351,13 +285,10 @@ async def generate_queries(
         f"generating {type} queries using model {task_model_id} for user {user.email}"
     )
 
-    if (request.app.state.config.QUERY_GENERATION_PROMPT_TEMPLATE).strip() != "":
-        template = request.app.state.config.QUERY_GENERATION_PROMPT_TEMPLATE
-    else:
-        template = DEFAULT_QUERY_GENERATION_PROMPT_TEMPLATE
-
     content = query_generation_template(
-        template, form_data["messages"], {"name": user.name}
+        DEFAULT_QUERY_GENERATION_PROMPT_TEMPLATE,
+        form_data["messages"],
+        {"name": user.name}
     )
 
     payload = {
@@ -407,33 +338,63 @@ async def generate_autocompletion(
     model_id = form_data["model"]
 
     log.debug(f"Generating autocompletion using model: {model_id} for user: {user.email}")
-    if request.app.state.config.AUTOCOMPLETE_GENERATION_PROMPT_TEMPLATE.strip() != "":
-        template = request.app.state.config.AUTOCOMPLETE_GENERATION_PROMPT_TEMPLATE
-    else:
-        template = DEFAULT_AUTOCOMPLETE_GENERATION_PROMPT_TEMPLATE
 
+    # Format the index file name
+    index_filename = f'{user.id}__index.pkl'
+
+    # Check if an index is available for the user
+    rag_service = Storage.get_file(index_filename)
+
+    # Perform RAG search
+    context_parts = []
+    if rag_service is not None:
+        try:
+            search_results = await rag_service.search(
+                query=prompt,
+                k=2,
+                return_embeddings=False
+            )
+            for i, result in enumerate(search_results, 1):
+                content = result.get("label", "")
+                metadata = result.get("metadata", {})
+
+                # Add source information if available
+                source_info = ""
+                if metadata:
+                    source_info = f" (Source: {metadata.get('source', 'Unknown')})"
+
+                context_parts.append(f"{i}. {content}{source_info}")
+        except Exception as e:
+            log.error(f"Failed to perform RAG search for auto-completion: {str(e)}")
+
+    # Convert the context to string format
+    context = "\n".join(context_parts).strip()
+
+    # Add context to the prompt
     content = autocomplete_generation_template(
-        template=template,
+        template=DEFAULT_AUTOCOMPLETE_GENERATION_PROMPT_TEMPLATE,
         prompt=prompt,
         messages=messages,
+        context=context,
         type=request_type,
         user={"name": user.name}
     )
 
-    payload = {
-        "model": model_id,
-        "messages": [{"role": "user", "content": content}],
-        "stream": False,
-        "metadata": {
-            **(request.state.metadata if hasattr(request.state, "metadata") else {}),
-            "task": str(TASKS.AUTOCOMPLETE_GENERATION),
-            "task_body": form_data,
-            "chat_id": form_data.get("chat_id", None),
-        },
-    }
+    # Construct the message for completion
+    messages = [{"role": "user", "content": content}]
+
+    # Generate the auto-completions
+    completions = await generate_auto_completions(
+        messages=messages,
+        model=model_id,
+        user=user
+    )
 
     try:
-        return await generate_chat_completion(request, form_data=payload, user=user)
+        return JSONResponse(
+            content=completions,
+            media_type="application/json"
+        )
     except Exception as e:
         log.error(f"Error generating chat completion: {e}")
         return JSONResponse(
