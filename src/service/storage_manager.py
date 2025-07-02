@@ -124,7 +124,7 @@ class StorageManager:
         :return: True if file exists, False if it doesn't exist
         """
         # Define the full file path
-        file_path = os.path.join(self.base_dir, filename)
+        file_path = os.path.join(self.data_dir, filename)
 
         return os.path.exists(file_path)
 

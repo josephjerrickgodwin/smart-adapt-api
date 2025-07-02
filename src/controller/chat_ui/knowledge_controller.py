@@ -5,6 +5,7 @@ from typing import Optional, Tuple, List, Any
 
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, status, Request, UploadFile, File, Form
+from fastapi.responses import StreamingResponse
 
 from src.model.constants import ERROR_MESSAGES
 from src.model.files import Files, FileModel
@@ -78,12 +79,14 @@ async def get_knowledge(user=Depends(get_verified_user)):
             user_role='admin' if user.role == "admin" else 'user',
             knowledge_ids=knowledge_ids
         )
-        for knowledge_file in knowledge_files:
-            knowledge_id = knowledge_file.get('id', '')
-            knowledge_data = knowledge_file.get('data', None)
-            if not knowledge_data:
-                continue
-            knowledge_with_files[knowledge_id].data = knowledge_data
+        if knowledge_files is not None:
+            for knowledge_file in knowledge_files:
+                knowledge_id = knowledge_file.get('id', '')
+                knowledge_data = knowledge_file.get('data', None)
+                if not knowledge_data:
+                    continue
+                if knowledge_id in knowledge_with_files:
+                    knowledge_with_files[knowledge_id].data = knowledge_data
 
     except Exception as e:
         log.exception(
@@ -111,12 +114,14 @@ async def get_knowledge_list(user=Depends(get_verified_user)):
             user_role='admin' if user.role == "admin" else 'user',
             knowledge_ids=knowledge_ids
         )
-        for knowledge_file in knowledge_files:
-            knowledge_id = knowledge_file.get('id', '')
-            knowledge_data = knowledge_file.get('data', None)
-            if not knowledge_data:
-                continue
-            knowledge_with_files[knowledge_id].data = knowledge_data
+        if knowledge_files is not None:
+            for knowledge_file in knowledge_files:
+                knowledge_id = knowledge_file.get('id', '')
+                knowledge_data = knowledge_file.get('data', None)
+                if not knowledge_data:
+                    continue
+                if knowledge_id in knowledge_with_files:
+                    knowledge_with_files[knowledge_id].data = knowledge_data
 
     except Exception as e:
         log.exception(
@@ -140,9 +145,7 @@ async def create_new_knowledge(
         access_control: Optional[str] = Form(None),
         user=Depends(get_verified_user),
 ):
-    if user.role != "admin" and not has_permission(
-        user.id, "workspace.knowledge", request.app.state.config.USER_PERMISSIONS
-    ):
+    if not has_permission(user.id, "workspace.knowledge", request.app.state.config.USER_PERMISSIONS):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail=ERROR_MESSAGES.UNAUTHORIZED,
@@ -273,9 +276,8 @@ async def get_knowledge_by_id(id: str, user=Depends(get_verified_user)):
 
     if knowledge:
         if (
-            user.role == "admin"
-            or knowledge.user_id == user.id
-            or has_access(user.id, "read", knowledge.access_control)
+            knowledge.user_id == user.id or 
+            has_access(user.id, "read", knowledge.access_control)
         ):
 
             file_ids = knowledge.data.get("file_ids", []) if knowledge.data else []
@@ -301,15 +303,6 @@ async def delete_knowledge_by_id(id: str, user=Depends(get_verified_user)):
             detail=ERROR_MESSAGES.NOT_FOUND,
         )
 
-    if (
-        not has_access(user.id, "write", knowledge.access_control)
-        and user.role != "admin"
-    ):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
-        )
-
     log.info(f"Deleting knowledge base: {id} (name: {knowledge.name})")
     _ = await client_service.remove_lora_adapter_using_client(
         user_id=user.id,
@@ -319,3 +312,65 @@ async def delete_knowledge_by_id(id: str, user=Depends(get_verified_user)):
     # Remove the knowledge data
     result = Knowledges.delete_knowledge_by_id(id=id)
     return result
+
+
+@router.get("/adapter/download")
+async def download_lora_adapter(user_id: str, knowledge_id: str, user=Depends(get_verified_user)):
+    try:
+        file_stream = await client_service.download_lora_adapter_using_client(user_id, knowledge_id)
+        if file_stream is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="LoRA adapter not found."
+            )
+        return StreamingResponse(
+            file_stream,
+            media_type="application/x-zip-compressed",
+            headers={
+                "Content-Disposition": f"attachment; filename=adapter.zip"
+            }
+        )
+    except HTTPException as e:
+        log.error(f"Failed to download LoRA adapter from the client: {str(e)}")
+        raise HTTPException(
+            status_code=e.status_code, 
+            detail=e.detail
+        )
+    except Exception as e:
+        log.error(f"Failed to download LoRA adapter: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+            detail="Failed to download LoRA adapter."
+        )
+
+
+@router.post("/fine-tune/stop")
+async def stop_knowledge_training(
+    user_id: str = Form(...),
+    knowledge_id: str = Form(...),
+    user=Depends(get_verified_user)
+):
+    """Stop the fine-tuning process for a knowledge base."""
+    # Check if knowledge exists and user has permission
+    knowledge = Knowledges.get_knowledge_by_id(id=knowledge_id)
+    if not knowledge:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=ERROR_MESSAGES.NOT_FOUND,
+        )
+
+    if (not has_access(user.id, "write", knowledge.access_control)):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=ERROR_MESSAGES.ACCESS_PROHIBITED,
+        )
+
+    try:
+        result = await client_service.stop_fine_tuning_using_client(user_id, knowledge_id)
+        return result
+    except Exception as e:
+        log.error(f"Failed to stop training process: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to stop training process."
+        )

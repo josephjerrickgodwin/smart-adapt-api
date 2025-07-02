@@ -2,202 +2,97 @@ import logging
 import sys
 
 import ftfy
-import requests
-from langchain_community.document_loaders import (
-    BSHTMLLoader,
-    CSVLoader,
-    Docx2txtLoader,
-    OutlookMessageLoader,
-    PyPDFLoader,
-    TextLoader,
-    UnstructuredEPubLoader,
-    UnstructuredExcelLoader,
-    UnstructuredPowerPointLoader,
-    UnstructuredRSTLoader,
-    UnstructuredXMLLoader,
-)
-from langchain_core.documents import Document
+from langchain_unstructured import UnstructuredLoader
 
-from src.service.env import SRC_LOG_LEVELS, GLOBAL_LOG_LEVEL
+from src.service.env import GLOBAL_LOG_LEVEL
 
 logging.basicConfig(stream=sys.stdout, level=GLOBAL_LOG_LEVEL)
 log = logging.getLogger(__name__)
-log.setLevel(SRC_LOG_LEVELS["RAG"])
-
-known_source_ext = [
-    "go",
-    "py",
-    "java",
-    "sh",
-    "bat",
-    "ps1",
-    "cmd",
-    "js",
-    "ts",
-    "css",
-    "cpp",
-    "hpp",
-    "h",
-    "c",
-    "cs",
-    "sql",
-    "log",
-    "ini",
-    "pl",
-    "pm",
-    "r",
-    "dart",
-    "dockerfile",
-    "env",
-    "php",
-    "hs",
-    "hsc",
-    "lua",
-    "nginxconf",
-    "conf",
-    "m",
-    "mm",
-    "plsql",
-    "perl",
-    "rb",
-    "rs",
-    "db2",
-    "scala",
-    "bash",
-    "swift",
-    "vue",
-    "svelte",
-    "msg",
-    "ex",
-    "exs",
-    "erl",
-    "tsx",
-    "jsx",
-    "hs",
-    "lhs",
-]
-
-
-class TikaLoader:
-    def __init__(self, url, file_path, mime_type=None):
-        self.url = url
-        self.file_path = file_path
-        self.mime_type = mime_type
-
-    def load(self) -> list[Document]:
-        with open(self.file_path, "rb") as f:
-            data = f.read()
-
-        if self.mime_type is not None:
-            headers = {"Content-Type": self.mime_type}
-        else:
-            headers = {}
-
-        endpoint = self.url
-        if not endpoint.endswith("/"):
-            endpoint += "/"
-        endpoint += "tika/text"
-
-        r = requests.put(endpoint, data=data, headers=headers)
-
-        if r.ok:
-            raw_metadata = r.json()
-            text = raw_metadata.get("X-TIKA:content", "<No text content found>")
-
-            if "Content-Type" in raw_metadata:
-                headers["Content-Type"] = raw_metadata["Content-Type"]
-
-            log.debug("Tika extracted text: %s", text)
-
-            return [Document(page_content=text, metadata=headers)]
-        else:
-            raise Exception(f"Error calling Tika: {r.reason}")
 
 
 class Loader:
-    def __init__(self, engine: str = "", **kwargs):
-        self.engine = engine
-        self.kwargs = kwargs
+    """
+    Provides methods to load documents from files, apply text normalization, extract metadata,
+    And return structured text chunks with contextual headers. Selects the appropriate loader
+    Based on file type and preserves document structure such as headings and page numbers.
+    """
 
-    def load(
-            self,
-            filename: str,
-            file_content_type: str,
-            file_path: str
-    ) -> list[Document]:
-        loader = self._get_loader(filename, file_content_type, file_path)
+    def load_and_extract(self, filename: str, file_path: str, chunk_size: int = 256) -> list[str]:
+        """
+        Loads a document from the specified file using the appropriate loader based on
+        file extension and content type, applies text fixing, and returns a list of Document objects
+        with context-aware chunks.
+
+        Args:
+            filename (str): Name of the file to load.
+            file_path (str): Path to the file.
+            chunk_size (int): Size of text chunks
+
+        Returns:
+            list[str]: List of processed document chunks, each prefixed with a structured header.
+        """
+        # Get the appropriate loader instance and chunk the file
+        loader = self._get_loader(
+            file_path=file_path,
+            chunk_size=chunk_size
+        )
         docs = loader.load()
 
-        return [
-            Document(
-                page_content=ftfy.fix_text(doc.page_content), metadata=doc.metadata
-            )
-            for doc in docs
-        ]
+        chunks = []
+        headers = ""
 
-    def get_loader(self, filename: str, file_content_type: str, file_path: str):
-        file_ext = filename.split(".")[-1].lower()
+        # Process each document (which might be a page, a paragraph, or a structural element)
+        for doc in docs:
+            # 1. Fix any inconsistencies in the content
+            content = ftfy.fix_text(doc.page_content)
+            if not content:
+                continue
+            content = content.strip()
 
-        if self.engine == "tika" and self.kwargs.get("TIKA_SERVER_URL"):
-            if file_ext in known_source_ext or (
-                file_content_type and file_content_type.find("text/") >= 0
-            ):
-                loader = TextLoader(file_path, autodetect_encoding=True)
-            else:
-                loader = TikaLoader(
-                    url=self.kwargs.get("TIKA_SERVER_URL"),
-                    file_path=file_path,
-                    mime_type=file_content_type,
-                )
-        else:
-            if file_ext == "pdf":
-                loader = PyPDFLoader(file_path, extract_images=self.kwargs.get("PDF_EXTRACT_IMAGES"))
+            # 2. Extract standard metadata
+            metadata = doc.metadata
+            page_number = metadata.get('page_number', None)
 
-            elif file_ext == "csv":
-                loader = CSVLoader(file_path)
+            # 3. Attempt to identify if this document represents a heading
+            doc_category = metadata.get('category', '') or metadata.get('type', '')
+            doc_category = doc_category.lower()
 
-            elif file_ext == "rst":
-                loader = UnstructuredRSTLoader(file_path, mode="elements")
+            # 4. If the document's category is a known heading type
+            if doc_category in ['title']:
+                headers = content
+            elif doc_category.startswith('h'):
+                headers += f'\n{headers}'
 
-            elif file_ext == "xml":
-                loader = UnstructuredXMLLoader(file_path)
+            # 5. Make sure that the current heading is not the content to avoid duplicates
+            if content.strip() == headers:
+                continue
 
-            elif file_ext in ["htm", "html"]:
-                loader = BSHTMLLoader(file_path, open_encoding="unicode_escape")
+            # 6. Add filename and page number
+            parts = f"file name: {filename}"
+            if page_number is not None:
+                parts += f", page number: {page_number}"
 
-            elif file_ext == "md":
-                loader = TextLoader(file_path, autodetect_encoding=True)
+            # 7. Add current heading if available
+            if headers:
+                parts += f", heading: {headers}"
 
-            elif file_content_type == "application/epub+zip":
-                loader = UnstructuredEPubLoader(file_path)
+            # 8. Assemble the header string
+            chunk = f'{parts}\nContent: {content}'
+            chunks.append(chunk)
 
-            elif (
-                file_content_type == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-                or file_ext == "docx"
-            ):
-                loader = Docx2txtLoader(file_path)
+        return chunks
 
-            elif file_content_type in [
-                "application/vnd.ms-excel",
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-            ] or file_ext in ["xls", "xlsx"]:
-                loader = UnstructuredExcelLoader(file_path)
+    @staticmethod
+    def _get_loader(file_path: str, chunk_size: int = 256):
+        """
+        Selects and returns the appropriate document loader that preserves document elements like headers.
 
-            elif file_content_type in [
-                "application/vnd.ms-powerpoint",
-                "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-            ] or file_ext in ["ppt", "pptx"]:
-                loader = UnstructuredPowerPointLoader(file_path)
+        Args:
+            file_path (str): Path to the file.
+            chunk_size (int): Size of text chunks
 
-            elif file_ext == "msg":
-                loader = OutlookMessageLoader(file_path)
-
-            elif file_ext in known_source_ext or (
-                file_content_type and file_content_type.find("text/") >= 0
-            ):
-                loader = TextLoader(file_path, autodetect_encoding=True)
-
-            else:
-                loader = TextLoader(file_path, autodetect_encoding=True)
-
-        return loader
+        Returns:
+            An instance of a document loader suitable for the file type.
+        """
+        # Break the document into its constituent parts, including headers, titles, and body text.
+        return UnstructuredLoader(file_path, max_characters=chunk_size)

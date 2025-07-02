@@ -12,7 +12,15 @@ router = APIRouter(prefix='/rag', tags=['RAG Controller'])
 
 
 @router.post("/search", status_code=status.HTTP_200_OK)
-async def search(user_id: str, data: RAGSearchModel):
+async def search(user_id: str, data: RAGSearchModel) -> JSONResponse:
+    """
+    Perform a RAG search for the given user and query.
+    Args:
+        user_id (str): The user's ID.
+        data (RAGSearchModel): The search query and parameters.
+    Returns:
+        JSONResponse: The search results or error message.
+    """
     try:
         query = data.query
         top_k = data.top_k if data.top_k else 0
