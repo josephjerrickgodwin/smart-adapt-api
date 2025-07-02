@@ -6,3 +6,7 @@ Tester.ipynb
 /database/cache/
 /database/cache/whisper/
 /database/uploads/
+/database/cache/audio/transcriptions/
+/database/cache/whisper/models/models--Systran--faster-whisper-base/
+/database/vector_db/
+/database/webui.db
