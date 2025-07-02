@@ -3,3 +3,6 @@
 /.idea/
 __pycache__/
 Tester.ipynb
+/database/cache/
+/database/cache/whisper/
+/database/uploads/

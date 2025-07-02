@@ -16,6 +16,7 @@ from src.controller.chat_ui.task_controller import router as task_router
 from src.controller.chat_ui.tool_controller import router as tool_router
 from src.controller.chat_ui.user_controller import router as user_router
 from src.controller.chat_ui.utils_controller import router as utils_router
+from src.controller.chat_ui.weights_and_bias_controller import router as wb_router
 
 # Misc routers
 from src.controller.health_controller import router as health_router
@@ -41,5 +42,6 @@ routers = [
     tool_router,
     user_router,
     utils_router,
-    rag_router
+    rag_router,
+    wb_router
 ]

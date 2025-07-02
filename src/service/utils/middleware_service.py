@@ -506,9 +506,13 @@ async def process_chat_payload(form_data: dict, metadata, user, event_emitter=No
         seconds = int(seconds)
 
         # Formulate the final thought message
-        minutes_message = f"{minutes} {'minutes' if minutes > 1 else 'minute'}"
         seconds_message = f"{seconds} {'seconds' if seconds > 1 else 'second'}"
-        final_thought_message = f"{minutes_message} and {seconds_message}"
+
+        if minutes > 0:
+            minutes_message = f"{minutes} {'minutes' if minutes > 1 else 'minute'}"
+            final_thought_message = f"{minutes_message} and {seconds_message}"
+        else:
+            final_thought_message = f"{seconds_message}"
 
         log.info(f"Time taken to process the RAG: {final_thought_message}")
         if event_emitter:

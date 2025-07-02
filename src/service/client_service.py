@@ -22,7 +22,9 @@ class ClientService:
         self.query_rewrite_endpoint = f'{CLIENT_NODE}/api/v1/rewrite'
         self.fine_tuning_endpoint = f'{CLIENT_NODE}/api/v1/fine-tune'
         self.validate_user_knowledge = f'{CLIENT_NODE}/api/v1/validate'
+        self.get_knowledge_data_endpoint = f'{CLIENT_NODE}/api/v1//adapter/download'
         self.delete_lora_adapter_endpoint = f'{CLIENT_NODE}/api/v1/adapter'
+        self.stop_fine_tuning_endpoint = f'{CLIENT_NODE}/api/v1/fine-tune/stop'
 
         self.default_header = {
             'Connection': 'keep-alive'
@@ -100,26 +102,23 @@ class ClientService:
         if knowledge_ids:
             request_body['knowledge_ids'] = knowledge_ids
 
-        for chunk in hf_client.stream(messages=messages, stream=stream):
-            yield chunk
-
         # Send the payload
-        # async with aiohttp.ClientSession() as session:
-        #     async with session.post(
-        #             url=self.chat_completions_endpoint,
-        #             headers={
-        #                 **self.default_header,
-        #                 **self.json_headers
-        #             },
-        #             json=request_body,
-        #             timeout=None
-        #     ) as response:
-        #         if response.status == 200:
-        #             async for chunk in response.content.iter_chunked(1024):
-        #                 chunk = chunk.decode('utf-8', errors='ignore')
-        #                 yield chunk
-        #         else:
-        #             response.raise_for_status()
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                    url=self.chat_completions_endpoint,
+                    headers={
+                        **self.default_header,
+                        **self.json_headers
+                    },
+                    json=request_body,
+                    timeout=None
+            ) as response:
+                if response.status == 200:
+                    async for chunk in response.content.iter_chunked(1024):
+                        chunk = chunk.decode('utf-8', errors='ignore')
+                        yield chunk
+                else:
+                    response.raise_for_status()
 
     async def fine_tuning_using_client(
             self,
@@ -170,6 +169,60 @@ class ClientService:
                     },
                     params=request_params,
                     timeout=None
+            ) as response:
+                if response.status == 200:
+                    return await response.json()
+                elif response.status == 404:
+                    return None
+                else:
+                    response.raise_for_status()
+
+    async def download_lora_adapter_using_client(self, user_id: str, knowledge_id: str):
+        """Return an async generator that streams the LoRA adapter bytes.
+
+        We wrap the request logic inside the generator so the HTTP connection
+        remains open for the entire duration of the streaming, avoiding the
+        ClientConnectionError that occurs when the response context manager
+        exits too early.
+        """
+
+        request_params = {
+            "user_id": user_id,
+            "knowledge_id": knowledge_id,
+        }
+
+        async def stream():
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    url=self.get_knowledge_data_endpoint,
+                    headers=self.default_header,
+                    params=request_params,
+                    timeout=None,
+                ) as response:
+                    if response.status != 200:
+                        response.raise_for_status()
+
+                    async for chunk in response.content.iter_chunked(1024):
+                        yield chunk
+
+        return stream()
+
+    async def stop_fine_tuning_using_client(self, user_id: str, knowledge_id: str):
+        request_body = {
+            "user_id": user_id,
+            "knowledge_id": knowledge_id
+        }
+
+        # aiohttp requires data to be a dict for x-www-form-urlencoded
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url=self.stop_fine_tuning_endpoint,
+                headers={
+                    **self.default_header,
+                    "Content-Type": "application/x-www-form-urlencoded",
+                },
+                data=request_body,
+                timeout=None
             ) as response:
                 if response.status == 200:
                     return await response.json()
